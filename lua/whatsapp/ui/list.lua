@@ -56,13 +56,22 @@ function M.ensure_buf()
     return S.bufs.list
   end
   local buf = vim.api.nvim_create_buf(false, true)
-  vim.api.nvim_buf_set_name(buf, "wa://chats")
+  vim.api.nvim_buf_set_name(buf, "whatsapp://chats")
   vim.bo[buf].buftype = "nofile"
   vim.bo[buf].bufhidden = "hide"
+  vim.bo[buf].buflisted = true
   vim.bo[buf].swapfile = false
   vim.bo[buf].filetype = "whatsapp-chats"
   vim.bo[buf].modifiable = false
   S.bufs.list = buf
+  -- wrap is window-local, so set it whenever the list is shown, including
+  -- when it is opened directly with :buffer whatsapp://chats.
+  vim.api.nvim_create_autocmd({ "BufEnter", "BufWinEnter" }, {
+    buffer = buf,
+    callback = function()
+      vim.wo.wrap = false
+    end,
+  })
 
   local wa = require("whatsapp")
   local map = function(lhs, fn, desc)
@@ -77,10 +86,6 @@ function M.ensure_buf()
   end, "Open chat, or cycle the filter")
   map("f", M.cycle_filter, "Filter: all / unread / groups")
   map("l", function() wa.open_chat(M.jid_under_cursor()) end, "Open chat")
-  map("i", function()
-    wa.open_chat(M.jid_under_cursor())
-    wa.focus_compose()
-  end, "Open chat and compose")
   map("u", M.next_unread, "Next unread chat")
   map("~", function() wa.toggle_unread(M.jid_under_cursor()) end, "Toggle unread")
   map("gU", function() wa.set_unread(M.jid_under_cursor(), true) end, "Mark unread")
@@ -93,8 +98,7 @@ function M.ensure_buf()
   map("]m", function() wa.next_media(1) end, "Next media in the open chat")
   map("[m", function() wa.next_media(-1) end, "Previous media in the open chat")
   map("K", wa.load_older, "Load older messages in the open chat")
-  map("L", function() require("whatsapp.ui.chat").toggle_layout() end, "Toggle bubbles / lines")
-  map("q", wa.close, "Close WhatsApp")
+  map("q", wa.close, "Close Whatsapp")
   map("g?", wa.toggle_help, "All keys")
   return buf
 end
@@ -109,6 +113,9 @@ end
 
 function M.render()
   local buf = M.ensure_buf()
+  if S.win_valid("list") and vim.api.nvim_win_get_buf(S.wins.list) == buf then
+    vim.wo[S.wins.list].wrap = false
+  end
   local width = S.text_width("list", S.opts.list_width)
   local chats = M.visible_chats()
   local lines, jids, unread = format.chat_list(chats, width, S.opts.unread_count)
@@ -133,14 +140,15 @@ function M.render()
     lines[2] = "  " .. filters[filter_index()].empty
   end
 
-  if S.win_valid("list") then
+  if S.win_showing("list") then
+    vim.wo[S.wins.list].wrap = false
     local n = 0
     for _, c in ipairs(S.chats) do
       if c.unread > 0 then
         n = n + 1
       end
     end
-    local bar = " WhatsApp"
+    local bar = " Whatsapp"
     if n > 0 then
       bar = bar .. " · " .. n .. " unread"
     end
@@ -167,14 +175,14 @@ function M.render()
     end
   end
 
-  if keep and S.win_valid("list") then
+  if keep and S.win_showing("list") then
     for i, jid in ipairs(jids) do
       if jid == keep then
         vim.api.nvim_win_set_cursor(S.wins.list, { i, 0 })
         break
       end
     end
-  elseif S.win_valid("list") and #chats > 0 and vim.api.nvim_win_get_cursor(S.wins.list)[1] == 1 then
+  elseif S.win_showing("list") and #chats > 0 and vim.api.nvim_win_get_cursor(S.wins.list)[1] == 1 then
     -- A fresh window opens on row 1, which would hide the f under the
     -- cursor and make <CR> cycle the filter instead of opening a chat.
     vim.api.nvim_win_set_cursor(S.wins.list, { 2, 0 })

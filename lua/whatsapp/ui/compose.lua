@@ -35,7 +35,7 @@ function M.ensure_buf(jid)
       wa.send_compose(jid)
     end,
   })
-  vim.keymap.set("n", "q", wa.cancel_reply, { buffer = buf, silent = true, desc = "Cancel reply" })
+  vim.keymap.set("n", "q", wa.close_compose, { buffer = buf, silent = true, desc = "Close compose" })
   vim.keymap.set("n", "g?", wa.toggle_help, { buffer = buf, silent = true, desc = "All keys" })
   vim.keymap.set("n", "<Tab>", function() wa.focus_next(1) end, { buffer = buf, silent = true, desc = "Next pane" })
   vim.keymap.set("n", "<S-Tab>", function() wa.focus_next(-1) end, { buffer = buf, silent = true, desc = "Previous pane" })

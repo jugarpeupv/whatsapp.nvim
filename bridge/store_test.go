@@ -15,6 +15,29 @@ func newTestStore(t *testing.T) *Store {
 	return s
 }
 
+func TestMarkReadMessages(t *testing.T) {
+	s := newTestStore(t)
+	_, err := s.InsertMessage(Message{ID: "out", ChatJID: "a@s.whatsapp.net", Text: "hello", TS: 1, FromMe: true})
+	must(t, err)
+	_, err = s.InsertMessage(Message{ID: "in", ChatJID: "a@s.whatsapp.net", Text: "hi", TS: 2})
+	must(t, err)
+	n, err := s.MarkReadMessages("a@s.whatsapp.net", []string{"out", "in"})
+	must(t, err)
+	if n != 1 {
+		t.Fatalf("changed %d rows, want 1", n)
+	}
+	m, err := s.GetMessage("a@s.whatsapp.net", "out")
+	must(t, err)
+	if !m.Read {
+		t.Fatal("outgoing message did not gain the read tick")
+	}
+	m, err = s.GetMessage("a@s.whatsapp.net", "in")
+	must(t, err)
+	if m.Read {
+		t.Fatal("incoming message cannot be marked read")
+	}
+}
+
 func TestChatListOrderAndUnread(t *testing.T) {
 	s := newTestStore(t)
 	must(t, s.UpsertChat("a@s.whatsapp.net", "Alice", false, 100))

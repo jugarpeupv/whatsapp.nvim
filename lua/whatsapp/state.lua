@@ -1,4 +1,4 @@
--- Shared mutable state for the open WhatsApp session. One tab, one chat.
+-- Shared mutable state for the open Whatsapp pane and conversation.
 local text = require("whatsapp.text")
 local M = {
   opts = nil,
@@ -9,8 +9,12 @@ local M = {
   messages = {},     -- jid -> array of messages, oldest first
   drafts = {},      -- jid -> session-only compose buffer, reply and pending send
   tab = nil,
+  mode = nil,        -- "current", "vertical", "horizontal" or "tab"
+  single = false,    -- one pane shows list or conversation; no separate chat window
+  previous = nil,    -- window/buffer/tab to restore when closing a single pane
   wins = { list = nil, chat = nil, compose = nil },
   bufs = { list = nil, chat = nil, compose = nil },
+  chat_bufs = {},    -- jid -> listed conversation buffer
   status = { paired = nil, connected = false }, -- paired unknown until "ready"
   fatal = nil, -- why the bridge refused to start, shown on the splash
   replaced = false, -- another client took the session; no reconnect is coming
@@ -86,7 +90,10 @@ function M.chat_title(jid)
 end
 
 function M.layout_valid()
-  return M.tab and vim.api.nvim_tabpage_is_valid(M.tab)
+  if M.single then
+    return M.win_valid("chat")
+  end
+  return M.tab and vim.api.nvim_tabpage_is_valid(M.tab) and M.win_valid("chat")
 end
 
 function M.win_valid(name)
@@ -94,10 +101,40 @@ function M.win_valid(name)
   return w and vim.api.nvim_win_is_valid(w)
 end
 
+-- True when the named pane's window is actually displaying its buffer. In a
+-- single-pane layout list and chat share a window, so only one is visible.
+function M.jid_for_buf(buf)
+  for jid, b in pairs(M.chat_bufs) do
+    if b == buf then
+      return jid
+    end
+  end
+  return nil
+end
+
+function M.chat_visible(jid)
+  local buf = M.chat_bufs[jid]
+  if not buf then
+    return false
+  end
+  return #vim.fn.win_findbuf(buf) > 0
+end
+
+function M.win_showing(name)
+  if not M.win_valid(name) then
+    return false
+  end
+  local buf = M.bufs[name]
+  return buf ~= nil and vim.api.nvim_win_get_buf(M.wins[name]) == buf
+end
+
 function M.reset_layout()
   M.tab = nil
+  M.mode = nil
+  M.single = false
+  M.previous = nil
   M.wins = { list = nil, chat = nil, compose = nil }
-  -- Hidden buffers and per-chat drafts survive closing the tab.
+  -- Hidden buffers and per-chat drafts survive closing the pane.
 end
 
 return M

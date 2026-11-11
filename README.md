@@ -1,126 +1,293 @@
 # whatsapp.nvim
 
-WhatsApp in Neovim. 100% human written code, without AI assistance, all in less than 200 bytes of Bash (see [`whatsapp.nvim.sh`](./whatsapp.nvim.sh)). Uses an experimental compiler so comes with negative warranty and entirely at your own risk.
+WhatsApp inside Neovim. A chat list, a conversation buffer, and a compose
+buffer that only appears when you ask for it.
 
-https://github.com/user-attachments/assets/1d78afec-1443-4e5d-ab55-ece2732e22b8
+Built on [whatsmeow](https://github.com/tulir/whatsmeow), which implements the
+WhatsApp Web multi-device protocol. The plugin appears on your phone as a
+linked device. This is an unofficial client and may violate WhatsApp's terms
+of service. Use it at your own risk.
 
-## Quickstart
+## How it works
 
-Install via your favourite plugin manager:
-
-```vim
-" vim-plug
-Plug 'dwmkerr/whatsapp.nvim', { 'rtp': 'dist', 'do': 'make build' }
+```
+Neovim ──stdio (JSON lines)──▶ bin/wa-bridge (Go, whatsmeow) ──▶ WhatsApp
+  lua/whatsapp/*                 SQLite stores under the store directory
 ```
 
+The bridge runs as a child process of Neovim, like a language server.
+Incoming messages are pushed to the editor as events, so the open chat updates
+live and other chats raise a notification.
+
+## Install
+
+Requires Go 1.26.9+ and a C compiler (SQLite is cgo).
+
+vim-plug:
+
+```vim
+Plug 'dwmkerr/whatsapp.nvim', { 'do': 'make build' }
+```
+
+lazy.nvim:
+
 ```lua
--- lazy.nvim
 {
   "dwmkerr/whatsapp.nvim",
   build = "make build",
   config = function()
-    vim.opt.rtp:append(vim.fn.stdpath("data") .. "/lazy/whatsapp.nvim/dist")
     require("whatsapp").setup()
   end,
 }
 ```
 
-Run `:WhatsApp pair`, then go to WhatsApp > Settings > Linked Devices to scan the QR code and pair. Run `:WhatsApp` at any time to open the WhatsApp view, or start Neovim straight into it with `nvim +WhatsApp`.
+For a local checkout, point `dir` at the repository root:
 
-## Features
-
-**Setup and Pairing**
-
-When you run `:WhatsApp` you'll get a splash screen showing the most essential shortcuts:
-
-![Splash screen with the main shortcuts](./docs/splash.png)
-
-Use the `:WhatsApp pair` command to connect. On your mobile go to Settings > Linked Devices > Link a Device and scan the code shown in the right-hand pane. `:WhatsApp logout` unlinks the device again and forgets the local session.
-
-![Pairing QR code in the chat pane](./docs/qr.png)
-
-**Chats and Messages**
-
-The list of chats is shown on the left. Threads with unread messages are shown in bold. There are a few convenient helpers:
-
-- `<CR>` opens the chat under the cursor, `i` opens it and starts composing
-- `u` jumps to the next unread chat
-- `f` cycles the filter on the line under the title: all, unread, groups (`<CR>` on that line does the same)
-- `gU` / `gu` / `~` mark unread / read / toggle, mirrored to your phone (as a reminder, think of read as lowercase and unread as uppercase)
-- `<Tab>` / `<S-Tab>` cycle between the list, the conversation and the compose pane
-- `R` replies to the message under the cursor, `r` reacts to it
-- `K` loads older messages, `L` toggles between bubbles and plain lines
-- `:w` in the compose pane sends; multi-line messages work
-- `g?` shows every key and command in the right-hand pane, `q` returns
-
-Keys that act on the conversation also work from the chat list, so a shortcut never depends on which pane has focus.
-
-![Chat view with bubbles](./docs/chat.png)
-
-**Attachments**
-
-Attachments show as a tag in the message: `[image photo.jpg ⇣]`, `[video clip.mp4 0:12 ⇣]`, and voice notes as duration plus waveform. `⇣` means not downloaded yet, `✓` means the file is in the local cache. `<CR>` opens a small menu (download, open, copy path), `gx` downloads if needed and opens in the default application, and `[m` / `]m` move between attachments. The target attachment carries a hint with these keys under it.
-
-![Voice note, image and typing bubble](./docs/media.png)
-
-Please be careful. If someone has sent something malicious then in the worst case opening it could lead to code execution. There are some best-effort protections[^1] but be mindful: every open asks for confirmation.
-
-**Images**
-
-In a terminal that speaks the Kitty graphics protocol, such as Ghostty or kitty, pictures show inside their bubble. `<CR>` then `View` zooms one to fill the pane, `q` brings the chat back. Elsewhere you get the tag line and `gx` opens the file. The default detects which you have; see [Configuration](./docs/configuration.md#images) for the `images` options.
-
-![Picture inside its bubble in Ghostty](./docs/images.png)
-
-**Other Bits & Pieces**
-
-- When new messages come in for a chat you are not viewing, a notification is shown via `vim.notify` (the command line by default, or whatever your notification plugin does). `notify = false` in `setup()` silences it.
-- The "…is typing" bubble appears under the last message while you have that chat open and the terminal focused, like the phone. In that state contacts see you as online, which is what makes WhatsApp send the typing events.
-- Each chat keeps its own unsent draft and reply target until Neovim exits.
-
-## Config
-
-There are various options available to customise WhatsApp, controlling how images are rendered, keyboard shortcuts, and more. Check the [Configuration](./docs/configuration.md) documentation for details.
-
-## Contributing
-
-Please feel free to share updates. If possible, also update the original instructions in [`whatsapp.nvim.sh`](./whatsapp.nvim.sh).
-
-There are open issues for ideas I've not got around to, here are some suggestions:
-
-- [#4](https://github.com/dwmkerr/whatsapp.nvim/issues/4) unread message count per chat
-- [#6](https://github.com/dwmkerr/whatsapp.nvim/issues/6) transcribe voice notes locally
-- [#7](https://github.com/dwmkerr/whatsapp.nvim/issues/7) configurable opener per media type
-- [#8](https://github.com/dwmkerr/whatsapp.nvim/issues/8) inline images for terminals that can handle it
-
-## Building from Source
-
-Check [`whatsapp.nvim.sh`](./whatsapp.nvim.sh) to build from source. For convenience, the pre-compiled version is in the [`./dist/`](./dist) folder.
-
-## Developer Guide
-
-Run from a local clone:
-
-```sh
-git clone https://github.com/dwmkerr/whatsapp.nvim.git
-cd whatsapp.nvim
-# Compile the plugin (needs Go and a C compiler).
-make build
-
-# Don't forget to change vimrc/nvim config to:
-# Plug '~/repos/whatsapp.nvim', { 'rtp': 'dist', 'do': 'make build' }
+```lua
+{
+  dir = vim.fn.expand("~/projects/whatsapp.nvim"),
+  build = "make build",
+  config = function()
+    require("whatsapp").setup()
+  end,
+}
 ```
 
-`make test` runs the Go and Lua tests. Plugin layout, bridge protocol and options are in [`dist/README.md`](./dist/README.md).
+Then pair once:
 
-I have found that when working live in WhatsApp, the best flow is:
-
-```sh
-# Close vim, rebuild, run:
-make -C ~/repos/whatsapp.nvim/dist build && nvim +WhatsApp
+```vim
+:Whatsapp pair
 ```
 
-## Other Notes
+Scan the QR code from your phone: WhatsApp > Settings > Linked Devices >
+Link a Device. History syncs in the background.
 
-This is built using the unofficial client [whatsmeow](https://github.com/tulir/whatsmeow), as noted on that repository it is possible that this might violate the WhatsApp terms of service. Also, the compiled version used the codex/Astra compiler and comes with the least possible warranty.
+If the splash says read marks are out of sync, open WhatsApp on your phone.
+On some accounts WhatsApp's server copy of read marks, pins and mutes cannot
+be verified, and only the phone can send a good copy. Pairing again does not
+help.
 
-[^1]: Downloads stream to a temporary file and are verified before entering the cache, each attachment is limited to 25 MiB, file extensions come from a short list of recognised MIME types (anything else becomes `.bin`), and nothing is ever opened without a confirmation prompt.
+## Use
+
+`:Whatsapp` opens the chat list in the current window. It does not create a
+tab and does not open a conversation until you select one.
+
+| Command | What |
+|---|---|
+| `:Whatsapp` | Chat list in the current window |
+| `:Whatsapp open vertical` | Chat list in a right-hand vertical split |
+| `:Whatsapp open horizontal` | Chat list in a split below the current window |
+| `:Whatsapp open tab` | Chat list and conversation in a new tab |
+| `:Whatsapp Alice` | Open the chat matching "Alice" |
+| `:Whatsapp pair` | Show the pairing QR code |
+| `:Whatsapp unlock` | Decrypt the store with your GPG key |
+| `:Whatsapp lock` | Stop the bridge and drop the key |
+| `:Whatsapp logout` | Unlink this device and wipe the local store |
+| `:Whatsapp status` | Bridge status |
+| `:Whatsapp stop` | Close and stop the bridge |
+| `:Whatsapp names` | Refresh contact names; runs on connect too |
+
+The list and every conversation are normal `buflisted` buffers, so they show in
+`:ls` and can be reached from any window:
+
+```vim
+:buffer whatsapp://chats
+:buffer whatsapp://paqui-garcia
+:buffer whatsapp://group-climbing
+```
+
+The list is always `whatsapp://chats`. A contact becomes its slugified name, a
+group `group-<slug>`, with a short hash appended only when two names collide.
+Spaces and punctuation are removed, so the name is safe to type in `:buffer`.
+Opening one of these buffers directly does not require going through the
+Whatsapp pane first.
+
+Chat list:
+
+| Key | What |
+|---|---|
+| `<CR>` `l` | Open the chat under the cursor |
+| `u` | Open the next unread chat |
+| `f` | Cycle the filter: all / unread / groups |
+| `gU` `gu` `~` | Mark unread / read / toggle, mirrored to your phone |
+| `gx` `]m` `[m` | Open / next / previous media in the open chat |
+| `K` | Load older messages in the open chat |
+| `<Tab>` `<S-Tab>` | Cycle panes |
+| `g?` | All keys |
+| `q` | Close Whatsapp |
+
+Conversation:
+
+| Key | What |
+|---|---|
+| `S` | Open the compose buffer below |
+| `R` | Reply to the message under the cursor |
+| `r` | React to the message under the cursor |
+| `<CR>` | Media menu: download, open, copy path |
+| `gx` | Download if needed, then confirm before opening |
+| `]m` `[m` | Next / previous media |
+| `K` | Load older messages |
+| `gU` `gu` `~` | Mark chat unread (back to the list) / read / toggle |
+| `<Tab>` `<S-Tab>` | Cycle panes |
+| `g?` | All keys |
+| `/` `n` `gg` `G` | Native search and movement |
+| `q` | Back to the chat list |
+
+Compose (only after `S`):
+
+| Key | What |
+|---|---|
+| `:w` | Send and close the compose buffer |
+| `q` | Close compose |
+| `<CR>` `gx` | Media menu / open media, in normal mode |
+| `]m` `[m` | Next / previous media |
+| `<Tab>` `<S-Tab>` | Cycle panes |
+| `g?` | All keys |
+
+Each chat keeps its own draft and reply target in memory until Neovim exits.
+A send response only clears the original draft if it has not been edited while
+sending.
+
+Messages render as a sender header, time and read tick, followed by the body:
+
+```
+Paqui García (15:38)
+  hello worlds
+
+me (15:39) ✓✓
+  see you
+```
+
+`✓` is an own message; `✓✓` means the other side read it. Incoming messages
+have no tick.
+
+Media shows as a tag in the body: `[image photo.jpg]`,
+`[video clip.mp4 0:12]`, and voice notes as duration plus waveform.
+`⇣` means not downloaded yet, `✓` means the file is in the cache.
+`<CR>` and `gx` act on the media under the cursor, or on the newest media in
+the chat when the cursor is elsewhere; the target carries a hint under it,
+and `]m` `[m` move between attachments.
+
+Attachments download without opening an application. Use `gx` to open one,
+with confirmation for every file type. Downloads stream to a temporary file
+and are checked before entering the cache. Each attachment is limited to
+25 MiB and 60 seconds, with at most two downloads at once.
+
+## Configure
+
+```lua
+require("whatsapp").setup({
+  store = vim.fn.stdpath("data") .. "/whatsapp",
+  list_width = 32,          -- vertical split and tab list width
+  list_height = 15,         -- horizontal split height
+  unread_count = false,     -- show unread counts in the chat list
+  compose_height = 3,
+  page_size = 100,
+  notify = true,
+  mark_read_on_view = true,
+  default_reaction = "👍",
+  images = { mode = "auto" },
+  encryption = "none",      -- "none" or "gpg"
+  gpg = {
+    key = "",               -- fingerprint; falls back to WHATSAPP_GPG_FINGERPRINT
+  },
+  lock_on_resume = true,
+})
+```
+
+See [Configuration](docs/configuration.md) for every option, image modes and
+highlight groups.
+
+## Encrypted store
+
+`encryption = "gpg"` keeps `session.db` and `messages.db` encrypted with
+SQLCipher. A random 32-byte key protects them; that key is stored as
+`session.key.gpg`, encrypted to your GPG key. GPG is only asked for the small
+key, never for the whole database, and the passphrase is handled by
+gpg-agent/pinentry (for example `pinentry-mac`), not by Neovim.
+
+```lua
+require("whatsapp").setup({
+  encryption = "gpg",
+  gpg = { key = "YOUR_GPG_FINGERPRINT" },
+})
+```
+
+The fingerprint can come from the environment instead of the config:
+
+```sh
+export WHATSAPP_GPG_FINGERPRINT=YOUR_GPG_FINGERPRINT
+```
+
+`gpg.key` wins when both are set. The fingerprint is public; the passphrase
+still goes only to gpg-agent/pinentry.
+
+Enabling encryption on an existing plaintext store is deliberately not
+automatic. Run `:Whatsapp logout`, enable the option, and pair again. The first
+run creates the wrapped key; later runs decrypt it at startup. If the GPG
+prompt is cancelled, the bridge stays locked and `:Whatsapp unlock` retries
+without restarting the editor.
+
+The session is locked by `:Whatsapp lock`, when Neovim exits, and after a
+system suspend/wake detected by a wall-clock jump (`lock_on_resume`). There is
+no lock on focus changes or idle time. Locking stops the bridge, so messages
+are queued by WhatsApp until you unlock.
+
+The lock is only as strong as GPG's prompt. If gpg-agent has the passphrase
+cached, or pinentry-mac has saved it in the macOS Keychain, `gpg --decrypt`
+can return the key without asking. Disable "Save in Keychain" in pinentry-mac
+and set `default-cache-ttl 0` (and `max-cache-ttl 0`) in `gpg-agent.conf` if
+you want every unlock to require the passphrase or a smartcard touch.
+
+`logout` closes the container and deletes `session.db*`, `messages.db*`,
+`session.key.gpg` and `media/`. Downloaded media is a cache, not part of
+SQLCipher, so it stays plaintext while it exists.
+
+## Develop
+
+```sh
+make build     # compile the bridge into bin/wa-bridge
+make test      # Go tests plus the headless Neovim test
+```
+
+Run the bridge by hand to poke the protocol:
+
+```sh
+printf '{"id":1,"method":"status"}\n' | ./bin/wa-bridge -store /tmp/wa
+```
+
+### Bridge protocol
+
+One JSON object per line. Requests carry an `id` and `method`; responses echo
+the `id` with `result` or `error`; events have no `id`.
+
+Methods: `status`, `unlock`, `pair.start`, `logout`, `chats.list`,
+`messages.list {jid, limit, before}`, `message.send {jid, text, reply_to}`,
+`message.react {jid, id, emoji}`, `chat.read {jid}`, `chat.unread {jid}`,
+`presence {available}`, `media.download {jid, id}`,
+`contacts.search {query}`.
+
+Events: `ready`, `unlocked`, `unpaired`, `connected`, `disconnected`,
+`logged_out`, `pair.qr {lines}`, `pair.ok`, `pair.timeout`, `pair.error`,
+`typing {chat, sender, sender_name, state, media}`,
+`message {chat_name, message}`, `messages.read {chat, ids}`, `chats.changed`,
+`sync.progress`, `sync.done`, `appstate.waiting {name}`,
+`appstate.synced {name}`, `fatal`.
+
+## Privacy
+
+Everything stays on your machine in the store directory: the session keys,
+the message database, and downloaded media. Encrypt the store if the directory
+might be copied, backed up or synced. Keep it out of cloud-synced folders
+regardless.
+
+The store is created owner-only (`0700`, databases `0600`). Display names have
+control characters removed and line breaks replaced with spaces; winbar text
+is also escaped. Media paths are sanitised, and image, video and audio
+extensions come from a small list of recognised MIME types for that media
+family. Unknown types become `.bin`. A recognised extension does not establish
+that a file is safe: opening any attachment requires confirmation.
+
+## License
+
+MIT. See [LICENSE](LICENSE).

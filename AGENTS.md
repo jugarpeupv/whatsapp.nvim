@@ -4,7 +4,7 @@ Instructions for coding agents working in this repository. `CLAUDE.md` includes 
 
 ## Layout
 
-- `dist/` is the plugin: Go bridge in `dist/bridge`, Lua in `dist/lua`, tests in `dist/test`. The joke in the root `README.md` is that `dist/` is "compiled output"; keep that framing.
+- Standard Neovim plugin layout: Lua in `lua/`, plugin files in `plugin/`, the Go bridge in `bridge/`, and tests in `test/`.
 - Temporary files go in `./scratch/`, which is gitignored.
 
 ## Branches and pull requests
@@ -34,12 +34,12 @@ Screenshots of a real account show other people's names, numbers and words. They
 
 How to mask, before asking for review:
 
-1. Prefer synthetic data. Take screenshots against the fake bridge (`dist/test/fake-bridge.sh`) or a chat with yourself, with invented names and messages. A real screenshot is a last resort.
+1. Prefer synthetic data. Take screenshots against the fake bridge (`test/fake-bridge.sh`) or a chat with yourself, with invented names and messages. A real screenshot is a last resort.
 2. Names: first name only, or a made-up name. Remove surnames everywhere, including group titles, the chat list, bubble headers and the winbar. Replace contact names that are phone numbers with a made-up name.
 3. Phone numbers: remove completely, in the winbar, the chat list, the compose bar and message text. Do not blur; blurred digits can be recovered.
 4. Message text: only text written by the maintainer or invented for the shot. Other people's messages are cut or replaced, including quoted replies and media captions.
 5. Group names, places, employers, schools and dates that identify a person are replaced.
-6. Pairing QR codes are secrets while valid. Only use a code that has expired or been invalidated by `:WhatsApp logout`, and prefer a fake code from the fake bridge.
+6. Pairing QR codes are secrets while valid. Only use a code that has expired or been invalidated by `:Whatsapp logout`, and prefer a fake code from the fake bridge.
 7. Crop to the plugin. Terminal tabs, tmux status lines and other windows often leak project or client names.
 8. Check the file at full size after editing, then list each change made when asking for review.
 

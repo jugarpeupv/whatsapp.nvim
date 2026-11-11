@@ -30,7 +30,7 @@ The bridge answers each request on its own goroutine so a slow send never blocks
 
 ## Data model
 
-`chats(jid, name, is_group, last_ts, unread)`. `messages(id, chat_jid, sender, sender_name, text, ts, from_me, media_type, filename, quoted_id, raw)`. `raw` is the marshalled protobuf; media downloads unmarshal it and hand it to whatsmeow, which avoids copying media keys into columns.
+`chats(jid, name, is_group, last_ts, unread)`. `messages(id, chat_jid, sender, sender_name, text, ts, from_me, read, media_type, filename, quoted_id, raw)`. `raw` is the marshalled protobuf; media downloads unmarshal it and hand it to whatsmeow, which avoids copying media keys into columns. `read` is set by receipts for our own outgoing messages.
 
 Unread is counted in the bridge: incremented on a live incoming message, cleared by `chat.read`, which also sends read receipts for the last 20 incoming messages.
 
@@ -38,9 +38,9 @@ JIDs are canonicalised to the phone-number form. LID addressing is resolved thro
 
 ## UI
 
-`:WhatsApp` opens a new tab: list on the left (`topleft 32vsplit`), chat on the right, compose below the chat (`belowright 3split`). The tab is reused on later calls. `q` closes the tab and leaves the bridge running so notifications keep arriving.
+`:Whatsapp` puts the chat list in the current window. `:Whatsapp open vertical` and `:Whatsapp open horizontal` use a single split, and `:Whatsapp open tab` keeps the list and conversation side by side in a new tab. No conversation is opened until `<CR>` selects a chat. `q` in a conversation goes back to the list; `q` in the list closes the pane. The bridge keeps running so notifications keep arriving.
 
-The compose buffer is `buftype=acwrite`. `BufWriteCmd` sends the trimmed content, clears the buffer, and appends the sent message locally. Reply state lives in `state.reply_to` and shows in the compose winbar.
+The compose buffer only exists after `S` in a conversation. It is `buftype=acwrite`. `BufWriteCmd` sends the trimmed content, clears the buffer, closes the compose split, and appends the sent message locally. Reply state lives in the draft and shows in the compose winbar.
 
 The chat buffer re-renders on every change. It follows the bottom unless the cursor was moved up. Each buffer line maps to a message so `R`, `r`, and `<CR>` act on the message under the cursor.
 
@@ -48,7 +48,7 @@ Pairing renders the QR code as half-block text in a floating window. No browser.
 
 ## Errors
 
-Bridge not built: one error notification pointing at `make`. Bridge exits non-zero: notification with the stderr tail. Not paired: notification pointing at `:WhatsApp pair`. Logged out by the phone: same.
+Bridge not built: one error notification pointing at `make`. Bridge exits non-zero: notification with the stderr tail. Not paired: notification pointing at `:Whatsapp pair`. Logged out by the phone: same.
 
 ## Tests
 

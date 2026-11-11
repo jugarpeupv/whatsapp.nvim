@@ -43,17 +43,10 @@ return function(check, events)
     S.chat_by_jid["111@s.whatsapp.net"].name = name
     local msg = { id = "hostile", sender_name = hostile .. string.rep("界", 100), sender = "x", ts = 1760390000,
       text = "hello", media_type = "document", filename = "file\nname.pdf", from_me = false }
-    for _, layout in ipairs({ "lines", "bubbles" }) do
-      local lines = layout == "lines" and format.conversation({ msg }, true) or format.bubbles({ msg }, true, 40)
-      local buf = vim.api.nvim_create_buf(false, true)
-      check(pcall(vim.api.nvim_buf_set_lines, buf, 0, -1, false, lines), "hostile sender/filename render in " .. layout)
-      if layout == "bubbles" then
-        local fits = true
-        for _, line in ipairs(lines) do fits = fits and vim.fn.strdisplaywidth(line) <= 40 end
-        check(fits, "long Unicode sender fits the bubble")
-      end
-      vim.api.nvim_buf_delete(buf, { force = true })
-    end
+    local lines = format.conversation({ msg }, true)
+    local buf = vim.api.nvim_create_buf(false, true)
+    check(pcall(vim.api.nvim_buf_set_lines, buf, 0, -1, false, lines), "hostile sender/filename render")
+    vim.api.nvim_buf_delete(buf, { force = true })
 
     local alice, bob = "111@s.whatsapp.net", "222@g.us"
     wa.open_chat(alice)
@@ -62,6 +55,7 @@ return function(check, events)
     local alice_reply = { id = "alice-reply", chat_jid = alice, text = "original", sender_name = "Alice" }
     wa.reply_to(alice_reply)
     wa.open_chat(bob)
+    wa.focus_compose()
     local bob_buf = S.bufs.compose
     check(alice_buf ~= bob_buf and compose.text() == "" and not compose.draft().reply_to, "new recipient has an independent empty draft and reply")
     wa.reply_to(alice_reply)
@@ -89,7 +83,9 @@ return function(check, events)
     check(compose.text(bob) == "newer draft" and not compose.draft(bob).sending, "failed sends retain the draft for retry")
     wa.close()
     wa.open()
-    check(S.bufs.compose == bob_buf and compose.text() == "newer draft", "closing and reopening preserves the draft")
+    check(S.bufs.compose == bob_buf, "closing and reopening preserves the draft buffer")
+    wa.open_chat(bob)
+    check(compose.text() == "newer draft", "reopening the chat restores its draft")
     S.chat_by_jid[bob].unread = 0
     wa.toggle_unread(bob)
     wa.open_chat(bob)

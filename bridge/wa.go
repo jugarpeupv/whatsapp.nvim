@@ -403,10 +403,25 @@ func (w *WA) handleMessage(evt *events.Message, live bool) {
 // or, with read receipts turned off, read-self; the app state mark-read
 // patch only covers the explicit "Mark as read" toggle.
 func (w *WA) handleReceipt(evt *events.Receipt) {
+	chat := w.canonical(context.Background(), evt.Chat, evt.RecipientAlt).String()
+	// A receipt from the other side about a message we sent: record the tick.
+	// Read-self receipts from our own other devices describe messages we
+	// received, and fall through to the unread-count path below.
+	if !evt.IsFromMe && (evt.Type == types.ReceiptTypeRead || evt.Type == types.ReceiptTypeReadSelf) {
+		ids := make([]string, 0, len(evt.MessageIDs))
+		for _, id := range evt.MessageIDs {
+			ids = append(ids, string(id))
+		}
+		if n, err := w.store.MarkReadMessages(chat, ids); err != nil {
+			w.log.Warnf("read tick for %s: %v", chat, err)
+		} else if n > 0 {
+			w.out.Emit("messages.read", map[string]interface{}{"chat": chat, "ids": ids})
+		}
+		return
+	}
 	if !evt.IsFromMe || (evt.Type != types.ReceiptTypeRead && evt.Type != types.ReceiptTypeReadSelf) {
 		return
 	}
-	chat := w.canonical(context.Background(), evt.Chat, evt.RecipientAlt).String()
 	var newest int64
 	for _, id := range evt.MessageIDs {
 		if m, err := w.store.GetMessage(chat, id); err == nil && m.TS > newest {

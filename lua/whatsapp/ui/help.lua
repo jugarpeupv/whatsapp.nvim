@@ -3,30 +3,32 @@
 local M = {}
 
 local commands = {
-  { ":WhatsApp", "open, or jump to the WhatsApp tab" },
-  { ":WhatsApp Alice", "open the chat matching Alice" },
-  { ":WhatsApp pair", "link this device (shows the QR code)" },
-  { ":WhatsApp unlock", "decrypt the store with your GPG key" },
-  { ":WhatsApp lock", "close the session and drop the key" },
-  { ":WhatsApp logout", "unlink this device and wipe the store" },
-  { ":WhatsApp stop", "close and stop the bridge" },
+  { ":Whatsapp", "open the chat list in this window" },
+  { ":Whatsapp open vertical", "open the chat list in a right split" },
+  { ":Whatsapp open horizontal", "open the chat list below" },
+  { ":Whatsapp open tab", "open the list and conversation in a new tab" },
+  { ":Whatsapp Alice", "open the chat matching Alice" },
+  { ":Whatsapp pair", "link this device (shows the QR code)" },
+  { ":Whatsapp unlock", "decrypt the store with your GPG key" },
+  { ":Whatsapp lock", "close the session and drop the key" },
+  { ":Whatsapp logout", "unlink this device and wipe the store" },
+  { ":Whatsapp stop", "close and stop the bridge" },
 }
 
 local keys = {
   list = {
     { "<CR> l", "open chat" },
-    { "i", "open chat and compose" },
     { "u", "next unread chat" },
     { "f", "filter: all / unread / groups" },
     { "gU gu ~", "mark unread / read / toggle" },
     { "gx ]m [m", "open / next / previous media in the open chat" },
-    { "K L", "older messages / toggle layout in the open chat" },
+    { "K", "older messages in the open chat" },
     { "<Tab>", "next pane" },
     { "g?", "all keys" },
-    { "q", "close WhatsApp" },
+    { "q", "close Whatsapp" },
   },
   chat = {
-    { "i a o", "compose" },
+    { "S", "write a message" },
     { "R", "reply to message under cursor" },
     { "r", "react to message under cursor" },
     { "<CR>", "media menu: download, open, copy path" },
@@ -34,9 +36,8 @@ local keys = {
     { "]m [m", "next / previous media" },
     { "K", "load older messages" },
     { "gU gu ~", "mark unread (closes chat) / read / toggle" },
-    { "L", "toggle bubbles / lines" },
     { "<Tab>", "next pane" },
-    { "q", "close WhatsApp" },
+    { "q", "back to chats" },
   },
   compose = {
     { ":w", "send" },
@@ -57,7 +58,7 @@ local sections = {
 
 -- Lines and highlight spans for the chat pane, centred like the splash.
 function M.layout(width, height)
-  local rows = { { text = "WhatsApp keys", hl = "Title" }, {} }
+  local rows = { { text = "Whatsapp keys", hl = "Title" }, {} }
   local keyw = 0
   for _, sec in ipairs(sections) do
     for _, k in ipairs(sec[2]) do

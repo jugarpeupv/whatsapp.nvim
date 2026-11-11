@@ -1,5 +1,6 @@
 local S = require("whatsapp.state")
 local format = require("whatsapp.format")
+local text = require("whatsapp.text")
 local help = require("whatsapp.ui.help")
 local images = require("whatsapp.ui.images")
 
@@ -7,43 +8,103 @@ local M = {}
 local ns = vim.api.nvim_create_namespace("whatsapp_chat")
 local ns_hint = vim.api.nvim_create_namespace("whatsapp_chat_hint")
 local typing_frame = 0
-local typing_start = nil -- 0-based line where the typing rows begin, nil when hidden
+local states = {} -- buffer -> per-conversation render state
+local splash_buf = nil
 
--- Rows for the typing indicator in the open chat, nil when there is none.
-local function typing_rows(width)
-  local t = S.typing
-  if not t or not S.current or t.jid ~= S.current or S.qr or S.help or S.view then
-    return nil
+local function st(buf)
+  if not states[buf] then
+    states[buf] = {
+      jid = S.jid_for_buf(buf),
+      line_owner = {},
+      media_rows = {},
+      typing_start = nil,
+      rendered_jid = nil,
+    }
   end
-  if S.opts.layout == "bubbles" then
-    return format.typing_bubble(t.who, typing_frame, width)
-  end
-  return { format.typing_line(t.who, typing_frame, t.media) }
+  return states[buf]
 end
-local line_owner = {}
-local media_rows = {} -- { { row = 1-based tag row, m = message }, ... } in chat order
-local rendered_jid = nil -- chat shown by the previous render, for scroll follow
 
-function M.ensure_buf()
+local function chat_buf()
   if S.bufs.chat and vim.api.nvim_buf_is_valid(S.bufs.chat) then
     return S.bufs.chat
   end
+  return vim.api.nvim_get_current_buf()
+end
+
+local function chat_state()
+  return st(chat_buf())
+end
+
+-- Rows for the typing indicator in the open chat, nil when there is none.
+local function typing_rows(jid)
+  local t = S.typing
+  if not t or not jid or t.jid ~= jid or S.qr or S.help or S.view then
+    return nil
+  end
+  return { "  " .. format.typing_line(t.who, typing_frame, t.media) }
+end
+
+-- A readable, unique buffer name. Spaces and punctuation collapse to dashes,
+-- groups get a prefix, and a short hash breaks collisions between contacts.
+local function buffer_name(jid)
+  local c = S.chat_by_jid[jid]
+  local label = c and c.name ~= "" and c.name or (jid or "chat"):match("^([^@]+)")
+  local slug = text.name(label or "chat"):lower()
+    :gsub("%s+", "-")
+    :gsub("[^%w%-%._\128-\255]", "")
+    :gsub("%-+", "-")
+    :gsub("^%-+", "")
+    :gsub("%-+$", "")
+  if slug == "" then
+    slug = "chat"
+  end
+  slug = slug:sub(1, 48)
+  if c and c.is_group then
+    slug = "group-" .. slug
+  end
+  local name = "whatsapp://" .. slug
+  local existing = vim.fn.bufnr(name)
+  if existing ~= -1 and existing ~= S.chat_bufs[jid] then
+    name = name .. "-" .. vim.fn.sha256(jid):sub(1, 6)
+  end
+  return name
+end
+
+function M.buffer_name(jid)
+  return buffer_name(jid)
+end
+
+function M.ensure_buf(jid)
+  jid = jid or S.current
+  if not jid then
+    return nil
+  end
+  local existing = S.chat_bufs[jid]
+  if existing and vim.api.nvim_buf_is_valid(existing) then
+    return existing
+  end
   local buf = vim.api.nvim_create_buf(false, true)
-  vim.api.nvim_buf_set_name(buf, "wa://chat")
+  vim.api.nvim_buf_set_name(buf, buffer_name(jid))
   vim.bo[buf].buftype = "nofile"
   vim.bo[buf].bufhidden = "hide"
+  vim.bo[buf].buflisted = true
   vim.bo[buf].swapfile = false
   vim.bo[buf].filetype = "whatsapp"
   vim.bo[buf].modifiable = false
-  S.bufs.chat = buf
+  S.chat_bufs[jid] = buf
+  st(buf).jid = jid
 
   local wa = require("whatsapp")
   local map = function(lhs, fn, desc)
     vim.keymap.set("n", lhs, fn, { buffer = buf, nowait = true, silent = true, desc = desc })
   end
-  for _, k in ipairs({ "i", "a", "o", "A", "I" }) do
-    map(k, wa.focus_compose, "Compose message")
-  end
+  vim.api.nvim_create_autocmd({ "BufEnter", "BufWinEnter" }, {
+    buffer = buf,
+    callback = function()
+      wa.enter_chat(jid, buf)
+    end,
+  })
+  map("S", function() wa.focus_compose(jid) end, "Write a message")
   map("R", function() wa.reply_to(M.message_under_cursor()) end, "Reply to message")
   map("r", function() wa.react_to(M.message_under_cursor()) end, "React to message")
   map("<CR>", function()
@@ -57,9 +118,9 @@ function M.ensure_buf()
   map("]m", function() wa.next_media(1) end, "Next media")
   map("[m", function() wa.next_media(-1) end, "Previous media")
   map("K", wa.load_older, "Load older messages")
-  map("~", function() wa.toggle_unread(S.current) end, "Toggle unread")
-  map("gU", function() wa.set_unread(S.current, true) end, "Mark chat unread and close it")
-  map("gu", function() wa.set_unread(S.current, false) end, "Mark chat read")
+  map("~", function() wa.toggle_unread(jid) end, "Toggle unread")
+  map("gU", function() wa.set_unread(jid, true) end, "Mark chat unread and close it")
+  map("gu", function() wa.set_unread(jid, false) end, "Mark chat read")
   map("<Tab>", function() wa.focus_next(1) end, "Next pane")
   map("<S-Tab>", function() wa.focus_next(-1) end, "Previous pane")
   map("q", function()
@@ -68,9 +129,9 @@ function M.ensure_buf()
     elseif S.view then
       wa.close_view()
     else
-      wa.close()
+      wa.close_chat(jid)
     end
-  end, "Close help or picture, or WhatsApp")
+  end, "Close help or picture, or back to chats")
   map("<Esc>", function()
     if S.help then
       wa.toggle_help()
@@ -79,33 +140,55 @@ function M.ensure_buf()
     end
   end, "Close help or picture")
   map("g?", wa.toggle_help, "All keys")
-  map("L", M.toggle_layout, "Toggle bubble/line layout")
   vim.api.nvim_create_autocmd("CursorMoved", { buffer = buf, callback = M.update_hint })
   return buf
 end
 
+-- The list/chat pane needs a buffer for the splash when no conversation is
+-- open. It is deliberately unlisted: there is nothing to return to.
+function M.splash_buf()
+  if splash_buf and vim.api.nvim_buf_is_valid(splash_buf) then
+    return splash_buf
+  end
+  splash_buf = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_buf_set_name(splash_buf, "whatsapp://splash")
+  vim.bo[splash_buf].buftype = "nofile"
+  vim.bo[splash_buf].bufhidden = "hide"
+  vim.bo[splash_buf].buflisted = false
+  vim.bo[splash_buf].swapfile = false
+  vim.bo[splash_buf].filetype = "whatsapp"
+  vim.bo[splash_buf].modifiable = false
+  states[splash_buf] = { jid = nil, line_owner = {}, media_rows = {}, typing_start = nil, rendered_jid = nil }
+  local wa = require("whatsapp")
+  vim.keymap.set("n", "q", wa.close, { buffer = splash_buf, silent = true, desc = "Close Whatsapp" })
+  vim.keymap.set("n", "g?", wa.toggle_help, { buffer = splash_buf, silent = true, desc = "All keys" })
+  return splash_buf
+end
+
 function M.media_count()
-  return #media_rows
+  return #chat_state().media_rows
 end
 
 -- The attachment that <CR> and gx act on: the media message under the
 -- cursor, else the newest one in the chat. Returns message and its tag row.
 function M.media_target()
-  if #media_rows == 0 then
+  local state = chat_state()
+  local rows = state.media_rows
+  if #rows == 0 then
     return nil
   end
-  if S.win_valid("chat") then
+  if S.win_showing("chat") then
     local row = vim.api.nvim_win_get_cursor(S.wins.chat)[1]
-    local m = line_owner[row]
+    local m = state.line_owner[row]
     if m and m.media_type and m.media_type ~= "" then
-      for _, e in ipairs(media_rows) do
+      for _, e in ipairs(rows) do
         if e.m == m then
           return m, e.row
         end
       end
     end
   end
-  local last = media_rows[#media_rows]
+  local last = rows[#rows]
   return last.m, last.row
 end
 
@@ -117,7 +200,9 @@ function M.next_media(dir, from_edge)
   if not S.win_valid("chat") then
     return false
   end
-  if #media_rows == 0 then
+  local state = chat_state()
+  local rows = state.media_rows
+  if #rows == 0 then
     vim.notify("WhatsApp: no media in this chat", vim.log.levels.INFO)
     return false
   end
@@ -126,19 +211,19 @@ function M.next_media(dir, from_edge)
     row = dir > 0 and 0 or vim.api.nvim_buf_line_count(S.bufs.chat) + 1
   else
     row = vim.api.nvim_win_get_cursor(S.wins.chat)[1]
-    cur = line_owner[row]
+    cur = state.line_owner[row]
   end
   local target
   if dir > 0 then
-    for _, e in ipairs(media_rows) do
+    for _, e in ipairs(rows) do
       if e.row > row and e.m ~= cur then
         target = e
         break
       end
     end
   else
-    for i = #media_rows, 1, -1 do
-      local e = media_rows[i]
+    for i = #rows, 1, -1 do
+      local e = rows[i]
       if e.row < row and e.m ~= cur then
         target = e
         break
@@ -168,7 +253,7 @@ function M.update_hint()
     return
   end
   local entry
-  for _, e in ipairs(media_rows) do
+  for _, e in ipairs(st(buf).media_rows) do
     if e.m == m then
       entry = e
     end
@@ -187,7 +272,7 @@ function M.update_hint()
   -- Virtual lines under the last buffer line sit below the window edge when
   -- the view was scrolled before they existed; re-anchor the bottom so the
   -- hint is on screen whenever the cursor is at the end of the chat.
-  if S.win_valid("chat") and anchor == vim.api.nvim_buf_line_count(buf) then
+  if S.win_showing("chat") and anchor == vim.api.nvim_buf_line_count(buf) then
     vim.api.nvim_win_call(S.wins.chat, function()
       if vim.api.nvim_win_get_cursor(0)[1] == anchor then
         vim.cmd("normal! zb")
@@ -196,17 +281,10 @@ function M.update_hint()
   end
 end
 
-function M.toggle_layout()
-  S.opts.layout = S.opts.layout == "bubbles" and "lines" or "bubbles"
-  M.render()
-end
-
 function M.message_under_cursor()
-  if not S.win_valid("chat") then
-    return nil
-  end
-  local row = vim.api.nvim_win_get_cursor(S.wins.chat)[1]
-  return line_owner[row]
+  local buf = vim.api.nvim_get_current_buf()
+  local row = vim.api.nvim_win_get_cursor(0)[1]
+  return (states[buf] and states[buf].line_owner[row]) or nil
 end
 
 -- Text for the chat window when nothing is open: a short centred block
@@ -214,7 +292,7 @@ end
 local function splash(width, height)
   local client = require("whatsapp.client")
   -- Each row: { text = ..., hl = line highlight } or { key = ..., text = ... }.
-  local rows = { { text = "WhatsApp", hl = "Title" }, {} }
+  local rows = { { text = "Whatsapp", hl = "Title" }, {} }
   local function note(text)
     rows[#rows + 1] = { text = text, hl = "Comment" }
   end
@@ -223,19 +301,19 @@ local function splash(width, height)
   end
   if S.fatal then
     note(S.fatal)
-    key(":WhatsApp", "tries again")
+    key(":Whatsapp", "tries again")
   elseif S.unlocking then
     note("unlocking the encrypted store…")
     key("GPG", "enter the passphrase in pinentry")
   elseif S.locked then
     local msg = S.unlock_error and ("locked: " .. require("whatsapp.text").single_line(S.unlock_error)) or "store locked"
     note(msg)
-    key(":WhatsApp unlock", "decrypt with your GPG key")
+    key(":Whatsapp unlock", "decrypt with your GPG key")
     rows[#rows + 1] = {}
     note("session.db stays encrypted on disk while locked")
   elseif not client.running() then
     note(S.fatal or "bridge not running")
-    key(":WhatsApp", S.fatal and "tries again" or "restarts it")
+    key(":Whatsapp", S.fatal and "tries again" or "restarts it")
   elseif S.qr then
     note("scan with WhatsApp > Linked Devices > Link a Device")
     if height < #S.qr + 4 or width < vim.fn.strdisplaywidth(S.qr[1]) then
@@ -252,12 +330,12 @@ local function splash(width, height)
   elseif S.status.paired == false then
     note("not paired")
     rows[#rows + 1] = {}
-    key(":WhatsApp pair", "links this device")
+    key(":Whatsapp pair", "links this device")
     rows[#rows + 1] = {}
     note("then scan the code with WhatsApp > Linked Devices")
   elseif S.replaced then
     note("another client took over this session")
-    key(":WhatsApp stop", "then :WhatsApp reconnects")
+    key(":Whatsapp stop", "then :Whatsapp reconnects")
   elseif not S.status.connected then
     note("connecting…")
   elseif S.sync and not S.synced then
@@ -270,7 +348,6 @@ local function splash(width, height)
       end
     end
     key("<CR>", "open chat")
-    key("i", "open and compose")
     key("u", "next unread")
     key("gU gu ~", "mark unread / read / toggle")
     key("<Tab>", "next pane")
@@ -316,75 +393,71 @@ end
 -- unless the user has scrolled up to read history. opts.bottom forces the
 -- jump, for a message the user has just sent.
 function M.render(opts)
-  local buf = M.ensure_buf()
-  local msgs = S.current and S.messages[S.current] or {}
-  local chat = S.current and S.chat_by_jid[S.current]
+  local buf = (opts and opts.buf) or S.bufs.chat or M.splash_buf()
+  if not vim.api.nvim_buf_is_valid(buf) then
+    return
+  end
+  local state = st(buf)
+  local jid = (opts and opts.jid) or state.jid
+  local is_current = jid ~= nil and jid == S.current
+  local msgs = (jid and S.messages[jid]) or {}
+  local chat = jid and S.chat_by_jid[jid]
   local width = S.text_width("chat", 80)
   local height = S.win_valid("chat") and vim.api.nvim_win_get_height(S.wins.chat) or 20
-  -- Same box rule as format.bubbles, so a picture is fitted to the widest
-  -- bubble the pane allows.
-  local bubble_inner_max = math.max(24, math.floor(width * 0.7)) - 4
-  -- A picture never takes more than half the pane, whatever the option.
+  -- A picture never takes more than half the pane.
   local image_rows = math.max(1, math.floor(height / 2))
   local lines, owners, spans
   -- A pending QR code takes the pane over even with a chat open: you can
   -- only be pairing because there is no session to read from anyway.
-  if S.help then
+  if S.help and is_current then
     lines, spans = help.layout(width, height)
     owners = {}
-  elseif S.view then
+  elseif S.view and is_current then
     images.clear(buf)
     lines, spans = images.full_layout(S.view, width, height)
     owners = {}
-  elseif not S.current or S.qr then
+  elseif not jid or S.qr then
     lines, spans = splash(width, height)
     owners = {}
     -- A wrapped QR code cannot be scanned; let it run off the edge instead.
-    if S.win_valid("chat") then
+    if S.win_showing("chat") then
       vim.wo[S.wins.chat].wrap = S.qr == nil
     end
-  elseif S.opts.layout == "bubbles" then
-    lines, owners, spans = format.bubbles(msgs, chat and chat.is_group, width, function(m)
-      return images.size(m, bubble_inner_max, image_rows)
-    end)
   else
     lines, owners, spans = format.conversation(msgs, chat and chat.is_group)
   end
   if #lines == 0 then
-    local text = "no messages yet · i to write"
+    local text = "no messages yet · S to write"
     lines = { string.rep(" ", math.max(0, math.floor((width - #text) / 2))) .. text }
     spans = { { 0, 0, -1, "Comment" } }
     owners = {}
   end
-  line_owner = owners
+  state.line_owner = owners
   -- Tag row per media message: the first of its lines that holds the tag.
-  media_rows = {}
+  state.media_rows = {}
   local seen = {}
   for i, m in pairs(owners) do
     if m.media_type and m.media_type ~= "" then
       if not seen[m] and lines[i]:find("[" .. m.media_type, 1, true) then
         seen[m] = { row = i, m = m, last = i }
-        media_rows[#media_rows + 1] = seen[m]
+        state.media_rows[#state.media_rows + 1] = seen[m]
       end
       if seen[m] and i > seen[m].last then
         seen[m].last = i
       end
     end
   end
-  table.sort(media_rows, function(a, b) return a.row < b.row end)
+  table.sort(state.media_rows, function(a, b) return a.row < b.row end)
 
   -- The indicator is real buffer text below the last message so following
   -- the bottom keeps it on screen; the timer rewrites just those rows.
-  typing_start = nil
-  local trows = typing_rows(width)
+  state.typing_start = nil
+  local trows = typing_rows(jid)
   if trows then
-    if S.opts.layout == "bubbles" then
-      lines[#lines + 1] = ""
-    end
-    typing_start = #lines
+    state.typing_start = #lines
     for _, r in ipairs(trows) do
       lines[#lines + 1] = r
-      spans[#spans + 1] = { #lines - 1, 0, -1, "WhatsAppBubble" }
+      spans[#spans + 1] = { #lines - 1, 0, -1, "Comment" }
     end
   end
 
@@ -392,37 +465,28 @@ function M.render(opts)
   -- newly opened chat always starts at its latest message.
   local follow = true
   local old_count = vim.api.nvim_buf_line_count(buf)
-  if S.win_valid("chat") and S.current == rendered_jid and not (opts and opts.bottom) then
+  if is_current and S.win_showing("chat") and state.rendered_jid == jid and not (opts and opts.bottom) then
     local row = vim.api.nvim_win_get_cursor(S.wins.chat)[1]
     follow = row >= old_count - 1
   end
   -- Help and the QR code park the cursor at the top; forget the chat so the
   -- next conversation render follows the bottom again.
-  if S.help or S.qr or S.view then
-    rendered_jid = nil
+  if (S.help or S.qr or S.view) and is_current then
+    state.rendered_jid = nil
   else
-    rendered_jid = S.current
+    state.rendered_jid = jid
   end
 
   vim.bo[buf].modifiable = true
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
   vim.bo[buf].modifiable = false
   vim.api.nvim_buf_clear_namespace(buf, ns, 0, -1)
-  -- Pictures: inside the bubble above its footer, or under the message at
-  -- the tag's indent in the lines layout. Either way above the hint.
+  -- Pictures hang under the message at the body's indent, above the hint.
   images.clear(buf)
-  for _, e in ipairs(media_rows) do
+  for _, e in ipairs(state.media_rows) do
     if e.m.media_type == "image" then
-      if S.opts.layout == "bubbles" then
-        local footer = lines[e.last] or ""
-        local indent = footer:match("^%s*")
-        local inner = vim.fn.strdisplaywidth(footer) - #indent - 4
-        images.place(buf, e.last, indent, e.m, bubble_inner_max, image_rows,
-          { inner = inner, hl = e.m.from_me and "WhatsAppBubbleMe" or "WhatsAppBubble" })
-      else
-        local indent = (lines[e.row] or ""):match("^%s*") .. "  "
-        images.place(buf, e.last, indent, e.m, width - #indent - 1, image_rows)
-      end
+      local indent = "  "
+      images.place(buf, e.last, indent, e.m, width - #indent - 1, image_rows)
     end
   end
   for _, s in ipairs(spans) do
@@ -434,17 +498,17 @@ function M.render(opts)
     end
   end
 
-  if S.win_valid("chat") then
-    local name = S.help and "WhatsApp keys"
-      or (S.view and ((S.view.filename ~= "" and S.view.filename or "image") .. " · q closes"))
-      or (S.current and S.chat_title(S.current) or "WhatsApp")
+  if S.win_showing("chat") and S.bufs.chat == buf then
+    local name = (S.help and is_current) and "Whatsapp keys"
+      or ((S.view and is_current) and ((S.view.filename ~= "" and S.view.filename or "image") .. " · q closes"))
+      or (jid and S.chat_title(jid) or "Whatsapp")
     vim.wo[S.wins.chat].winbar = " " .. S.bar_text(name)
     -- The chat window is often not the current one (the list or compose
     -- pane has focus), and Neovim leaves a non-current window's topline
     -- alone when its buffer changes. Scroll explicitly inside the window so
     -- the view matches the cursor.
     vim.api.nvim_win_call(S.wins.chat, function()
-      if S.help or S.view or not S.current or S.qr then
+      if ((S.help or S.view) and is_current) or not jid or S.qr then
         -- Help, picture, splash and QR code read from the top.
         vim.api.nvim_win_set_cursor(0, { 1, 0 })
         vim.cmd("normal! zt")
@@ -468,20 +532,21 @@ function M.render_typing(advance)
   if not (buf and vim.api.nvim_buf_is_valid(buf)) then
     return
   end
-  local trows = typing_rows(S.text_width("chat", 80))
-  if trows == nil and typing_start == nil then
+  local state = st(buf)
+  local trows = typing_rows(state.jid)
+  if trows == nil and state.typing_start == nil then
     return
   end
-  if trows == nil or typing_start == nil then
+  if trows == nil or state.typing_start == nil then
     M.render()
     return
   end
   vim.bo[buf].modifiable = true
-  vim.api.nvim_buf_set_lines(buf, typing_start, -1, false, trows)
+  vim.api.nvim_buf_set_lines(buf, state.typing_start, -1, false, trows)
   vim.bo[buf].modifiable = false
-  vim.api.nvim_buf_clear_namespace(buf, ns, typing_start, -1)
-  for i = typing_start, typing_start + #trows - 1 do
-    vim.api.nvim_buf_set_extmark(buf, ns, i, 0, { line_hl_group = "WhatsAppBubble" })
+  vim.api.nvim_buf_clear_namespace(buf, ns, state.typing_start, -1)
+  for i = state.typing_start, state.typing_start + #trows - 1 do
+    vim.api.nvim_buf_set_extmark(buf, ns, i, 0, { line_hl_group = "Comment" })
   end
 end
 

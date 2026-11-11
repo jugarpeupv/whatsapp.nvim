@@ -22,7 +22,7 @@ local defaults = {
   notify = true,
   mark_read_on_view = true,
   default_reaction = "👍",
-  layout = "bubbles", -- or "lines"
+  list_height = 15, -- horizontal split height
   encryption = "none", -- "gpg" wraps the SQLCipher key with a GPG key
   gpg = {
     key = "", -- fingerprint; required for encryption = "gpg"
@@ -48,15 +48,14 @@ local function define_highlights()
   hl("WhatsAppFilter", { bold = true })
   hl("WhatsAppCurrent", { link = "Visual" })
   hl("WhatsAppTime", { link = "Comment" })
-  hl("WhatsAppSender", { link = "Identifier" })
-  hl("WhatsAppMe", { link = "String" })
+  hl("WhatsAppSender", { bold = true })
+  hl("WhatsAppMe", { bold = true })
+  hl("WhatsAppRead", { link = "DiagnosticInfo" })
   -- Underlined like a link: the tag responds to keys.
   local special = vim.api.nvim_get_hl(0, { name = "Special", link = false })
   hl("WhatsAppMedia", { fg = special.fg, underline = true })
   hl("WhatsAppSeparator", { link = "Comment" })
   hl("WhatsAppQuote", { link = "Comment" })
-  hl("WhatsAppBubble", { link = "Normal" })
-  hl("WhatsAppBubbleMe", { link = "DiffAdd" })
 end
 
 local function notify(msg, level)
@@ -146,6 +145,19 @@ end
 
 local typing_timer = nil
 local resume_timer = nil
+local help_back_list = false
+local loading = {} -- jid -> true while a messages.list request is in flight
+local apply_win_opts
+
+local function clear_chat_buffers()
+  for _, buf in pairs(S.chat_bufs) do
+    if vim.api.nvim_buf_is_valid(buf) then
+      pcall(vim.api.nvim_buf_delete, buf, { force = true })
+    end
+  end
+  S.chat_bufs = {}
+  S.bufs.chat = nil
+end
 
 local function stop_typing()
   if typing_timer then
@@ -192,6 +204,11 @@ local function wire_events()
     if S.locked and data.error then
       notify("store locked: " .. data.error, vim.log.levels.WARN)
     end
+    if S.locked then
+      M.show_chat()
+    elseif not S.current then
+      M.show_list()
+    end
     chat.render()
     if not S.locked then
       M.refresh_chats()
@@ -205,13 +222,16 @@ local function wire_events()
     S.locked = false
     S.unlocking = false
     S.unlock_error = nil
+    if not S.current then
+      M.show_list()
+    end
     chat.render()
     M.refresh_chats()
   end)
   client.on("unpaired", function()
     S.status.paired = false
     chat.render()
-    notify("not paired yet, run :WhatsApp pair", vim.log.levels.WARN)
+    notify("not paired yet, run :Whatsapp pair", vim.log.levels.WARN)
   end)
   client.on("connected", function()
     if locked() then
@@ -228,7 +248,7 @@ local function wire_events()
     S.status.connected = false
     if d and d.reason == "replaced" then
       S.replaced = true
-      notify("another client took over this session, run :WhatsApp stop then :WhatsApp", vim.log.levels.WARN)
+      notify("another client took over this session, run :Whatsapp stop then :Whatsapp", vim.log.levels.WARN)
     end
     chat.render()
   end)
@@ -239,7 +259,7 @@ local function wire_events()
     if d and d.reason == "user" then
       return
     end
-    notify("logged out (" .. (d and d.reason or "?") .. "), run :WhatsApp pair", vim.log.levels.ERROR)
+    notify("logged out (" .. (d and d.reason or "?") .. "), run :Whatsapp pair", vim.log.levels.ERROR)
   end)
   client.on("pair.qr", function(d)
     S.pairing = false
@@ -247,11 +267,13 @@ local function wire_events()
     if not S.layout_valid() then
       M.open()
     end
+    M.show_chat(true)
     chat.render()
   end)
   local function end_pairing()
     S.pairing = false
     S.qr = nil
+    M.show_list()
     chat.render()
   end
   client.on("pair.ok", function()
@@ -262,7 +284,7 @@ local function wire_events()
   end)
   client.on("pair.timeout", function()
     end_pairing()
-    notify("pairing timed out, run :WhatsApp pair again", vim.log.levels.WARN)
+    notify("pairing timed out, run :Whatsapp pair again", vim.log.levels.WARN)
   end)
   client.on("pair.error", function(d)
     end_pairing()
@@ -312,6 +334,24 @@ local function wire_events()
       stop_typing()
     end
   end)
+  client.on("messages.read", function(d)
+    if locked() then
+      return
+    end
+    local ids = {}
+    for _, id in ipairs(d.ids or {}) do
+      ids[id] = true
+    end
+    for _, m in ipairs(S.messages[d.chat] or {}) do
+      if ids[m.id] then
+        m.read = true
+      end
+    end
+    local buf = S.chat_bufs[d.chat]
+    if buf and #vim.fn.win_findbuf(buf) > 0 then
+      chat.render({ buf = buf, jid = d.chat })
+    end
+  end)
   client.on("message", function(d)
     if locked() then
       return
@@ -323,11 +363,10 @@ local function wire_events()
     if S.typing and S.typing.jid == m.chat_jid and S.typing.sender == m.sender then
       stop_typing()
     end
-    local visible = S.current == m.chat_jid
-      and S.layout_valid()
-      and vim.api.nvim_get_current_tabpage() == S.tab
+    local buf = S.chat_bufs[m.chat_jid]
+    local visible = buf ~= nil and #vim.fn.win_findbuf(buf) > 0
     if visible then
-      chat.render()
+      chat.render({ buf = buf, jid = m.chat_jid })
       if S.opts.mark_read_on_view and not m.from_me then
         client.request("chat.read", { jid = m.chat_jid })
       end
@@ -388,18 +427,7 @@ function M.set_unread(jid, unread)
     c.unread = 1
     client.request("chat.unread", { jid = jid })
     if S.current == jid then
-      S.current = nil
-      stop_typing()
-      set_presence(false)
-      if S.win_valid("compose") then
-        vim.api.nvim_win_close(S.wins.compose, true)
-        S.wins.compose = nil
-      end
-      chat.render()
-      compose.update_winbar()
-      if S.win_valid("list") then
-        vim.api.nvim_set_current_win(S.wins.list)
-      end
+      M.show_list()
     end
   end
   list.render()
@@ -415,10 +443,12 @@ end
 -- Cycle focus list, chat, compose (when open), like Tab in diffview or
 -- lazygit. dir is 1 or -1.
 function M.focus_next(dir)
-  local order = {}
+  local order, seen = {}, {}
   for _, name in ipairs({ "list", "chat", "compose" }) do
-    if S.win_valid(name) then
-      order[#order + 1] = name
+    local win = S.wins[name]
+    if S.win_valid(name) and not seen[win] then
+      seen[win] = true
+      order[#order + 1] = win
     end
   end
   if #order == 0 then
@@ -426,13 +456,12 @@ function M.focus_next(dir)
   end
   local cur = vim.api.nvim_get_current_win()
   local idx = 0
-  for i, name in ipairs(order) do
-    if S.wins[name] == cur then
+  for i, win in ipairs(order) do
+    if win == cur then
       idx = i
     end
   end
-  local nxt = order[((idx - 1 + dir) % #order) + 1]
-  vim.api.nvim_set_current_win(S.wins[nxt])
+  vim.api.nvim_set_current_win(order[((idx - 1 + dir) % #order) + 1])
 end
 
 function M.refresh_chats()
@@ -467,26 +496,13 @@ local function dismiss_help()
   S.help_return = nil
 end
 
-function M.open_chat(jid)
-  if not jid then
+local function load_messages(jid)
+  if loading[jid] then
     return
   end
-  if locked() then
-    notify("store is locked, run :WhatsApp unlock", vim.log.levels.WARN)
-    return
-  end
-  dismiss_help()
-  S.view = nil
-  if S.current ~= jid then
-    stop_typing()
-  end
-  S.current = jid
-  set_presence(true)
-  M.ensure_compose()
-  -- Drop the previous chat's view immediately, even if loading this one is slow.
-  chat.render()
-  list.render()
+  loading[jid] = true
   client.request("messages.list", { jid = jid, limit = S.opts.page_size }, function(err, msgs)
+    loading[jid] = nil
     if locked() then
       return
     end
@@ -506,17 +522,69 @@ function M.open_chat(jid)
       end
     end
     S.messages[jid] = msgs
-    if S.current == jid then
-      chat.render()
+    local buf = S.chat_bufs[jid]
+    if buf and #vim.fn.win_findbuf(buf) > 0 then
+      chat.render({ buf = buf, jid = jid })
       list.render()
-      compose.update_winbar()
+      if S.current == jid then
+        compose.update_winbar()
+      end
     end
   end)
+end
+
+-- Entering a chat buffer from :b, a split, or the chat list updates the
+-- plugin's notion of the open conversation and makes the buffer usable on
+-- its own, without going through the Whatsapp pane.
+function M.enter_chat(jid, buf, refresh)
+  if not (jid and buf and vim.api.nvim_buf_is_valid(buf)) then
+    return
+  end
+  if locked() then
+    return
+  end
+  if S.current ~= jid then
+    stop_typing()
+  end
+  S.current = jid
+  S.bufs.chat = buf
+  S.wins.chat = vim.api.nvim_get_current_win()
+  apply_win_opts("chat")
+  set_presence(true)
+  if refresh or S.messages[jid] == nil then
+    load_messages(jid)
+  end
+  chat.render({ buf = buf, jid = jid })
+  list.render()
   local c = S.chat_by_jid[jid]
   if S.opts.mark_read_on_view and c and c.unread > 0 then
     c.unread = 0
     client.request("chat.read", { jid = jid })
   end
+end
+
+function M.open_chat(jid)
+  if not jid then
+    return
+  end
+  if locked() then
+    notify("store is locked, run :Whatsapp unlock", vim.log.levels.WARN)
+    return
+  end
+  dismiss_help()
+  S.view = nil
+  local buf = chat.ensure_buf(jid)
+  if not buf then
+    return
+  end
+  local target = S.layout_valid() and S.wins.chat or vim.api.nvim_get_current_win()
+  S.wins.chat = target
+  if S.single and S.wins.list == target then
+    S.wins.list = target
+  end
+  vim.api.nvim_win_set_buf(target, buf)
+  vim.api.nvim_set_current_win(target)
+  M.enter_chat(jid, buf, true)
 end
 
 function M.load_older()
@@ -593,6 +661,7 @@ function M.send_compose(jid)
     -- Replying moves the cursor up to the quoted message, so following only
     -- from the bottom would leave the sent message out of view.
     chat.render({ bottom = S.current == jid })
+    M.close_compose()
     M.refresh_chats()
   end)
 end
@@ -691,7 +760,7 @@ function M.view_image(m)
   end
   S.help = false
   S.view = m
-  vim.api.nvim_set_current_win(S.wins.chat)
+  M.show_chat(true)
   chat.render()
 end
 
@@ -709,6 +778,13 @@ end
 function M.toggle_help()
   if S.help then
     S.help = false
+    if S.single then
+      if help_back_list then
+        M.show_list()
+      else
+        M.show_chat(false)
+      end
+    end
     chat.render()
     if S.help_return and vim.api.nvim_win_is_valid(S.help_return) then
       vim.api.nvim_set_current_win(S.help_return)
@@ -720,10 +796,11 @@ function M.toggle_help()
   if not S.win_valid("chat") then
     return
   end
+  help_back_list = S.single and S.win_showing("list") or not S.current
   S.help_return = vim.api.nvim_get_current_win()
   S.help = true
   S.view = nil
-  vim.api.nvim_set_current_win(S.wins.chat)
+  M.show_chat(true)
   chat.render()
 end
 
@@ -793,8 +870,8 @@ function M.media_menu(m)
   end)
 end
 
-function M.focus_compose()
-  M.ensure_compose()
+function M.focus_compose(jid)
+  M.ensure_compose(jid)
   if not S.win_valid("compose") then
     return
   end
@@ -815,8 +892,8 @@ local WIN_OPTS = {
   compose = vim.tbl_extend("force", common, { winfixheight = true }),
 }
 
-local function apply_win_opts(name)
-  if not S.win_valid(name) then
+apply_win_opts = function(name)
+  if not S.win_showing(name) then
     return
   end
   for k, v in pairs(WIN_OPTS[name]) do
@@ -828,13 +905,17 @@ local function apply_win_opts(name)
   end
 end
 
--- The compose pane only exists once a chat is open; nothing to write to
--- before that.
-function M.ensure_compose()
-  if not S.current or not S.win_valid("chat") then
+-- The compose pane only exists after S in a conversation; nothing to write
+-- to before that.
+function M.ensure_compose(jid)
+  jid = jid or S.current
+  if not jid or not S.win_valid("chat") then
     return
   end
-  local buf = compose.ensure_buf()
+  if S.current ~= jid then
+    S.current = jid
+  end
+  local buf = compose.ensure_buf(jid)
   S.bufs.compose = buf
   if S.win_valid("compose") then
     vim.api.nvim_win_set_buf(S.wins.compose, buf)
@@ -849,25 +930,108 @@ function M.ensure_compose()
   compose.update_winbar()
 end
 
-local function build_layout()
-  vim.cmd("tabnew")
-  S.tab = vim.api.nvim_get_current_tabpage()
-  S.wins.chat = vim.api.nvim_get_current_win()
-  vim.api.nvim_win_set_buf(S.wins.chat, chat.ensure_buf())
+function M.close_compose()
+  if S.win_valid("compose") then
+    vim.api.nvim_win_close(S.wins.compose, true)
+    S.wins.compose = nil
+  end
+  M.cancel_reply()
+  if S.win_valid("chat") then
+    vim.api.nvim_set_current_win(S.wins.chat)
+    apply_win_opts("chat")
+  end
+end
+
+-- Show the conversation buffer. In single-pane layouts the same window
+-- switches from the chat list to the conversation.
+function M.show_chat(focus)
+  if not S.layout_valid() then
+    return
+  end
+  local buf = S.current and chat.ensure_buf(S.current) or chat.splash_buf()
+  S.bufs.chat = buf
+  if S.single then
+    S.wins.list = S.wins.chat
+  end
+  vim.api.nvim_win_set_buf(S.wins.chat, buf)
   apply_win_opts("chat")
+  if focus then
+    vim.api.nvim_set_current_win(S.wins.chat)
+  end
+end
 
-  vim.cmd("topleft " .. S.opts.list_width .. "vsplit")
-  S.wins.list = vim.api.nvim_get_current_win()
-  vim.api.nvim_win_set_buf(S.wins.list, list.ensure_buf())
-  apply_win_opts("list")
+-- Show the chat list. In a tab layout the list and chat are separate, so the
+-- chat pane goes back to its splash; in a single pane the window switches
+-- back to the list buffer.
+function M.show_list()
+  if not S.layout_valid() then
+    return
+  end
+  dismiss_help()
+  S.view = nil
+  stop_typing()
+  set_presence(false)
+  S.current = nil
+  if S.win_valid("compose") then
+    vim.api.nvim_win_close(S.wins.compose, true)
+    S.wins.compose = nil
+  end
+  local buf = list.ensure_buf()
+  S.bufs.list = buf
+  S.bufs.chat = chat.splash_buf()
+  if S.single then
+    S.wins.list = S.wins.chat
+    vim.api.nvim_win_set_buf(S.wins.chat, buf)
+    apply_win_opts("list")
+    vim.api.nvim_set_current_win(S.wins.chat)
+  else
+    vim.api.nvim_win_set_buf(S.wins.list, buf)
+    apply_win_opts("list")
+    vim.api.nvim_set_current_win(S.wins.list)
+    vim.api.nvim_win_set_buf(S.wins.chat, S.bufs.chat)
+    apply_win_opts("chat")
+    chat.render()
+  end
+  list.render()
+end
 
+-- q in a conversation: return to the list when the chat is part of the
+-- Whatsapp pane, otherwise close the standalone window (:b opened it).
+function M.close_chat(jid)
+  jid = jid or S.current
+  local buf = jid and S.chat_bufs[jid]
+  if not buf then
+    return
+  end
+  local win = vim.api.nvim_get_current_win()
+  if S.layout_valid() and S.wins.chat == win then
+    M.show_list()
+    return
+  end
+  if vim.api.nvim_win_get_buf(win) == buf then
+    if #vim.api.nvim_tabpage_list_wins(0) > 1 then
+      pcall(vim.api.nvim_win_close, win, true)
+    else
+      pcall(vim.cmd, "bprevious")
+    end
+  end
+end
+
+local function remember_previous()
+  S.previous = {
+    win = vim.api.nvim_get_current_win(),
+    buf = vim.api.nvim_win_get_buf(0),
+    tab = vim.api.nvim_get_current_tabpage(),
+  }
+end
+
+local function layout_autocmds(mode)
+  local group = vim.api.nvim_create_augroup("WhatsappLayout", { clear = true })
   vim.api.nvim_create_autocmd({ "WinEnter", "InsertEnter", "InsertLeave", "FocusGained", "FocusLost" }, {
+    group = group,
     callback = function(ev)
-      local w = vim.api.nvim_get_current_win()
-      for name, win in pairs(S.wins) do
-        if win == w then
-          apply_win_opts(name)
-        end
+      for name in pairs(WIN_OPTS) do
+        apply_win_opts(name)
       end
       if ev.event == "FocusLost" then
         set_presence(false)
@@ -877,6 +1041,7 @@ local function build_layout()
     end,
   })
   vim.api.nvim_create_autocmd({ "WinResized", "VimResized" }, {
+    group = group,
     callback = function()
       if S.layout_valid() then
         chat.render()
@@ -884,20 +1049,64 @@ local function build_layout()
       end
     end,
   })
-  vim.api.nvim_create_autocmd("TabClosed", {
-    once = true,
-    callback = function()
-      if not S.layout_valid() then
-        S.reset_layout()
-      end
-    end,
-  })
-  list.render()
-  chat.render()
-  M.ensure_compose()
+  if mode == "tab" then
+    vim.api.nvim_create_autocmd("TabClosed", {
+      group = group,
+      callback = function()
+        if not S.layout_valid() then
+          S.reset_layout()
+        end
+      end,
+    })
+  end
 end
 
-function M.open()
+local function build_layout(mode)
+  remember_previous()
+  S.mode = mode
+  S.single = mode ~= "tab"
+  S.tab = mode == "tab" and vim.api.nvim_get_current_tabpage() or nil
+  S.current = nil
+
+  if mode == "tab" then
+    vim.cmd("tabnew")
+    S.tab = vim.api.nvim_get_current_tabpage()
+    S.wins.chat = vim.api.nvim_get_current_win()
+    S.wins.list = nil
+    S.bufs.chat = chat.splash_buf()
+    vim.api.nvim_win_set_buf(S.wins.chat, S.bufs.chat)
+    apply_win_opts("chat")
+
+    vim.cmd("topleft " .. S.opts.list_width .. "vsplit")
+    S.wins.list = vim.api.nvim_get_current_win()
+    S.bufs.list = list.ensure_buf()
+    vim.api.nvim_win_set_buf(S.wins.list, S.bufs.list)
+    apply_win_opts("list")
+  else
+    if mode == "vertical" then
+      vim.cmd("botright " .. S.opts.list_width .. "vsplit")
+    elseif mode == "horizontal" then
+      vim.cmd("botright " .. S.opts.list_height .. "split")
+    end
+    S.wins.chat = vim.api.nvim_get_current_win()
+    S.wins.list = S.wins.chat
+    vim.api.nvim_win_set_buf(S.wins.chat, list.ensure_buf())
+    S.bufs.list = list.ensure_buf()
+    S.bufs.chat = chat.splash_buf()
+    apply_win_opts("list")
+  end
+
+  layout_autocmds(mode)
+  list.render()
+  chat.render()
+end
+
+function M.open(mode)
+  mode = mode or "current"
+  if mode ~= "current" and mode ~= "vertical" and mode ~= "horizontal" and mode ~= "tab" then
+    notify("unknown open mode " .. mode, vim.log.levels.WARN)
+    mode = "current"
+  end
   if not client.running() then
     local args = bridge_args()
     if args == nil then
@@ -925,18 +1134,30 @@ function M.open()
     end
   end
   if S.layout_valid() then
-    vim.api.nvim_set_current_tabpage(S.tab)
+    if S.mode == "tab" then
+      vim.api.nvim_set_current_tabpage(S.tab)
+    end
+    if S.current and S.win_valid("chat") then
+      vim.api.nvim_set_current_win(S.wins.chat)
+    elseif S.win_valid("list") then
+      vim.api.nvim_set_current_win(S.wins.list)
+    end
+    return
+  end
+  build_layout(mode)
+  if locked() then
+    M.show_chat(true)
   else
-    build_layout()
+    M.show_list()
   end
   M.refresh_chats()
 end
 
 function M.toggle()
-  if not S.locked and S.layout_valid() and vim.api.nvim_get_current_tabpage() == S.tab then
+  if S.layout_valid() then
     M.close()
   else
-    M.open()
+    M.open("current")
   end
 end
 
@@ -946,9 +1167,23 @@ function M.close()
   require("whatsapp.ui.images").reset()
   stop_typing()
   set_presence(false)
+  local prev = S.previous
   if S.layout_valid() then
-    pcall(vim.api.nvim_set_current_tabpage, S.tab)
-    pcall(vim.cmd, "tabclose")
+    if S.mode == "tab" then
+      pcall(vim.api.nvim_set_current_tabpage, S.tab)
+      pcall(vim.cmd, "tabclose")
+    elseif S.wins.chat and vim.api.nvim_win_is_valid(S.wins.chat) then
+      if S.mode == "current" then
+        if prev and prev.buf and vim.api.nvim_buf_is_valid(prev.buf) then
+          pcall(vim.api.nvim_win_set_buf, S.wins.chat, prev.buf)
+        end
+      else
+        pcall(vim.api.nvim_win_close, S.wins.chat, true)
+        if prev and prev.win and vim.api.nvim_win_is_valid(prev.win) then
+          pcall(vim.api.nvim_set_current_win, prev.win)
+        end
+      end
+    end
   end
   S.reset_layout()
 end
@@ -977,6 +1212,7 @@ function M.lock()
   S.messages = {}
   S.chats = {}
   S.chat_by_jid = {}
+  clear_chat_buffers()
   S.qr = nil
   S.pairing = false
   S.help = false
@@ -992,6 +1228,7 @@ function M.lock()
   end
   client.stop()
   if S.layout_valid() then
+    M.show_chat(true)
     list.render()
     chat.render()
   end
@@ -1015,6 +1252,7 @@ function M.unlock()
   end
   S.unlocking = true
   S.unlock_error = nil
+  M.show_chat(true)
   chat.render()
   notify("unlocking with GPG…")
   client.request("unlock", nil, function(err, st)
@@ -1040,11 +1278,12 @@ function M.pair()
     return
   end
   if locked() then
-    notify("store is locked, run :WhatsApp unlock", vim.log.levels.WARN)
+    notify("store is locked, run :Whatsapp unlock", vim.log.levels.WARN)
     return
   end
   dismiss_help()
   S.pairing = true
+  M.show_chat(true)
   chat.render()
   client.request("pair.start", nil, function(err)
     if err then
@@ -1056,7 +1295,7 @@ function M.pair()
 end
 
 -- Unlink this device from the phone and forget the local session. Stops the
--- bridge so the next :WhatsApp pair starts with a clean device store.
+-- bridge so the next :Whatsapp pair starts with a clean device store.
 function M.logout()
   if not client.running() then
     notify("bridge not running")
@@ -1064,6 +1303,7 @@ function M.logout()
   end
   client.request("logout", nil, function(err)
     M.close()
+    clear_chat_buffers()
     client.stop()
     S.status.paired = false
     S.status.connected = false
@@ -1071,7 +1311,7 @@ function M.logout()
     if err then
       notify(err, vim.log.levels.WARN)
     end
-    notify("logged out, run :WhatsApp pair to link again")
+    notify("logged out, run :Whatsapp pair to link again")
   end)
 end
 
@@ -1096,7 +1336,7 @@ end
 function M.open_by_name(name)
   M.open()
   if locked() then
-    notify("store is locked, run :WhatsApp unlock", vim.log.levels.WARN)
+    notify("store is locked, run :Whatsapp unlock", vim.log.levels.WARN)
     return
   end
   local needle = name:lower()

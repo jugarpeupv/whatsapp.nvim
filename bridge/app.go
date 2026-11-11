@@ -81,7 +81,7 @@ func (a *App) current() (*WA, error) {
 		if a.unlockErr != "" {
 			return nil, fmt.Errorf("store is locked: %s", a.unlockErr)
 		}
-		return nil, errors.New("store is locked; run :WhatsApp unlock")
+		return nil, errors.New("store is locked; run :Whatsapp unlock")
 	}
 	return a.wa, nil
 }

@@ -6,14 +6,14 @@ All keys are optional. These are the defaults.
 require("whatsapp").setup({
   bin = nil,                                     -- bridge binary, default <plugin>/bin/wa-bridge
   store = vim.fn.stdpath("data") .. "/whatsapp", -- session, messages and media cache
-  list_width = 32,
+  list_width = 32,                               -- vertical split and tab list width
+  list_height = 15,                              -- horizontal split height
   unread_count = false,                          -- unread message count left of the time
   compose_height = 3,
   page_size = 100,                               -- messages per page, K loads more
   notify = true,                                 -- vim.notify for chats you are not viewing
   mark_read_on_view = true,                      -- send read receipts when you open a chat
   default_reaction = "👍",
-  layout = "bubbles",                            -- or "lines", L toggles
   encryption = "none",                           -- "none" or "gpg"
   gpg = {
     key = "",                                    -- fingerprint; falls back to WHATSAPP_GPG_FINGERPRINT
@@ -35,14 +35,34 @@ require("whatsapp").setup({
 
 `encryption = "gpg"` wraps a random SQLCipher key with your GPG key. Set `gpg.key` to the fingerprint, or leave it empty and export `WHATSAPP_GPG_FINGERPRINT`; the config value wins. `gpg.program`, `gpg.key_file` and `gpg.home` are only needed for non-default installations. The fingerprint is public; the passphrase is entered through gpg-agent's pinentry (for example `pinentry-mac`) and Neovim never sees it.
 
-The store must be fresh: enabling encryption on an existing plaintext store is refused. Run `:WhatsApp logout`, set the option, then `:WhatsApp pair` again.
+The store must be fresh: enabling encryption on an existing plaintext store is refused. Run `:Whatsapp logout`, set the option, then `:Whatsapp pair` again.
 
-`:WhatsApp lock` stops the bridge and drops the key; `:WhatsApp unlock` asks GPG for it again. The bridge also locks when Neovim exits and, with `lock_on_resume`, after a system suspend/wake detected by a wall-clock jump. There is deliberately no auto-lock on focus or idle. While locked there is no WhatsApp connection, so incoming messages wait on the server.
+`:Whatsapp lock` stops the bridge and drops the key; `:Whatsapp unlock` asks GPG for it again. The bridge also locks when Neovim exits and, with `lock_on_resume`, after a system suspend/wake detected by a wall-clock jump. There is deliberately no auto-lock on focus or idle. While locked there is no WhatsApp connection, so incoming messages wait on the server.
+
+## Opening
+
+`:Whatsapp` puts the chat list in the current window. `:Whatsapp open vertical` uses a right-hand vertical split, `:Whatsapp open horizontal` a split below, and `:Whatsapp open tab` a new tab with the list and conversation side by side. No conversation is opened until you press `<CR>` on a chat. `S` in a conversation opens the compose buffer below it; `:w` sends and closes it.
+
+The list is the listed buffer `whatsapp://chats`. Every conversation is also a listed buffer: a contact becomes `<slugified-name>`, a group `group-<slugified-name>`. Use `:buffer whatsapp://paqui-garcia` to open one directly; the plugin updates the active conversation when the buffer is entered. A short hash is appended only if two names would collide.
+
+## Messages
+
+Messages are rendered as a sender header with the time and, for your own messages, a read tick:
+
+```
+Paqui García (15:38)
+  hello worlds
+
+me (15:39) ✓✓
+  see you
+```
+
+`WhatsAppSender` and `WhatsAppMe` are bold; `WhatsAppRead` highlights the tick.
 
 ## Images
 
-`kitty` draws pictures inside their bubble and needs a Kitty graphics terminal (Ghostty, kitty, WezTerm, Konsole) plus ImageMagick or macOS `sips`; `tag` shows the `[image ✓]` line and `gx` opens the file. `auto` picks `kitty` when both are found. Inside tmux the plugin enables `allow-passthrough` for its pane.
+`kitty` draws pictures in the conversation and needs a Kitty graphics terminal (Ghostty, kitty, WezTerm, Konsole) plus ImageMagick or macOS `sips`; `tag` shows the `[image ✓]` line and `gx` opens the file. `auto` picks `kitty` when both are found. Inside tmux the plugin enables `allow-passthrough` for its pane.
 
 ## Highlight groups
 
-`WhatsAppUnread`, `WhatsAppFilter`, `WhatsAppCurrent`, `WhatsAppTime`, `WhatsAppSender`, `WhatsAppMe`, `WhatsAppMedia`, `WhatsAppSeparator`, `WhatsAppQuote`, `WhatsAppBubble`, `WhatsAppBubbleMe`. Override them after `setup()`.
+`WhatsAppUnread`, `WhatsAppFilter`, `WhatsAppCurrent`, `WhatsAppTime`, `WhatsAppSender`, `WhatsAppMe`, `WhatsAppRead`, `WhatsAppMedia`, `WhatsAppSeparator`, `WhatsAppQuote`. Override them after `setup()`.

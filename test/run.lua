@@ -17,6 +17,8 @@ local function wait_for(pred, ms)
 end
 
 return function()
+  check(vim.fn.exists(":Whatsapp") == 2 and vim.fn.exists(":WhatsApp") == 0, "the command is :Whatsapp")
+
   -- format.lua is pure, test it directly.
   local format = require("whatsapp.format")
   local lines, jids, unread = format.chat_list({
@@ -37,22 +39,20 @@ return function()
     { id = "2", text = "", ts = 1760390060, from_me = true, sender_name = "me", media_type = "image", filename = "image.jpg" },
   }, false)
   check(clines[1]:match("^── ") ~= nil, "conversation starts with a day separator")
-  check(clines[2]:match("Alice: hi$") ~= nil and clines[3]:match("there$") ~= nil, "multi-line text continues indented")
-  check(owners[3] and owners[3].id == "1", "continuation line maps to its message")
-  check(clines[4]:find("[image ⇣]", 1, true) ~= nil, "media renders as a tag, generic image.jpg name dropped: " .. clines[4])
+  check(clines[2]:match("^Alice %(%d%d:%d%d%)$") ~= nil, "conversation header carries name and time: " .. clines[2])
+  check(clines[3] == "  hi" and clines[4] == "  there", "multi-line text is indented by two spaces")
+  check(owners[4] and owners[4].id == "1", "body line maps to its message")
+  check(table.concat(clines, "\n"):find("[image ⇣]", 1, true) ~= nil, "media renders as a tag, generic image.jpg name dropped")
+  check(#spans > 0, "spans emitted")
+  local me_line
+  for _, l in ipairs(clines) do
+    if l:find("me (", 1, true) then me_line = l end
+  end
+  check(me_line and me_line:find("✓", 1, true) ~= nil, "own message carries a tick: " .. tostring(me_line))
   local nlines = format.conversation({
     { id = "5", text = "", ts = 1760390060, from_me = true, sender_name = "me", media_type = "image", filename = "holiday.jpg" },
   }, false)
-  check(nlines[2]:find("[image holiday.jpg ⇣]", 1, true) ~= nil, "a real filename stays in the tag")
-  local wide = format.bubbles({
-    { id = "6", text = "", ts = 1760390060, from_me = false, sender_name = "Alice", sender = "x", media_type = "image", filename = "image.jpg" },
-  }, false, 80, function() return 30 end)
-  local head_line
-  for _, l in ipairs(wide) do
-    if l:find("╭", 1, true) then head_line = l end
-  end
-  check(head_line and vim.fn.strdisplaywidth(head_line) == 34, "bubble widens to frame a picture: " .. tostring(head_line))
-  check(#spans > 0, "spans emitted")
+  check(table.concat(nlines, "\n"):find("[image holiday.jpg ⇣]", 1, true) ~= nil, "a real filename stays in the tag")
 
   check(format.waveform({ 0, 100, 50, 0 }, 4) == "▁█▄▁", "waveform maps levels to blocks")
   check(format.waveform({ 10, 10 }, 2) == "██", "waveform scales to the loudest sample")
@@ -63,39 +63,13 @@ return function()
     { id = "4", text = "", ts = 1760390060, from_me = false, sender_name = "Edward", sender = "x",
       media_type = "video", filename = "clip.mp4", seconds = 5 },
   }, false)
-  check(vlines[2]:find("[voice 1:02 ▁█▄▁ ✓]", 1, true) ~= nil, "voice note shows duration, waveform and cached tick: " .. vlines[2])
-  check(vlines[3]:find("[video clip.mp4 0:05 ⇣]", 1, true) ~= nil, "video keeps its filename and shows duration")
-
-  local blines, bowners = format.bubbles({
-    { id = "1", text = "a fairly long message that needs wrapping across lines", ts = 1760390000, from_me = false, sender_name = "Alice", sender = "x" },
-    { id = "2", text = "ok", ts = 1760390060, from_me = true, sender_name = "me" },
-  }, false, 40)
-  local joined_b = table.concat(blines, "\n")
-  check(joined_b:find("╭─ Alice", 1, true) ~= nil, "bubble header carries sender")
-  check(joined_b:find("│ that needs wrapping", 1, true) ~= nil, "long text wraps inside the box")
-  local head_w, foot_w
-  for _, l in ipairs(blines) do
-    if l:find("╭─ Alice", 1, true) then head_w = vim.fn.strdisplaywidth(l) end
-    -- The footer time depends on the local timezone; find the box edge, not
-    -- a hard-coded clock value.
-    if not foot_w and l:find("╰", 1, true) then foot_w = vim.fn.strdisplaywidth(l) end
-  end
-  check(head_w == foot_w, "box header and footer have equal width")
-  local me_head
-  for i, l in ipairs(blines) do
-    if l:find("╭─ me", 1, true) then
-      me_head = i
-    end
-  end
-  check(me_head and blines[me_head]:match("^%s+╭") ~= nil, "own bubble is right-aligned")
-  check(me_head and bowners[me_head] and bowners[me_head].id == "2", "bubble lines map to their message")
-  for _, l in ipairs(blines) do
-    check(vim.fn.strdisplaywidth(l) <= 40, "bubble line fits width: " .. l)
-  end
+  local vjoined = table.concat(vlines, "\n")
+  check(vjoined:find("[voice 1:02 ▁█▄▁ ✓]", 1, true) ~= nil, "voice note shows duration, waveform and cached tick")
+  check(vjoined:find("[video clip.mp4 0:05 ⇣]", 1, true) ~= nil, "video keeps its filename and shows duration")
 
   -- Now the real UI against the fake bridge.
   local wa = require("whatsapp")
-  wa.setup({ bin = root .. "/test/fake-bridge.sh", store = vim.fn.tempname(), notify = false, layout = "lines" })
+  wa.setup({ bin = root .. "/test/fake-bridge.sh", store = vim.fn.tempname(), notify = false })
   local S = require("whatsapp.state")
   local client = require("whatsapp.client")
   local events, on = {}, client.on
@@ -111,9 +85,12 @@ return function()
   client.on = on
   check(wait_for(function() return #S.chats == 2 end), "chats loaded from bridge")
   check(S.layout_valid() and S.win_valid("list") and S.win_valid("chat"), "list and chat windows built")
+  check(vim.bo[S.bufs.list].buflisted and vim.api.nvim_buf_get_name(S.bufs.list) == "whatsapp://chats",
+    "the chat list is a listed whatsapp://chats buffer")
+  check(vim.wo[S.wins.list].wrap == false, "the chat list does not wrap")
   check(not S.win_valid("compose"), "compose hidden until a chat opens")
   local splash = table.concat(vim.api.nvim_buf_get_lines(S.bufs.chat, 0, -1, false), "\n")
-  check(splash:find("WhatsApp", 1, true) ~= nil and splash:find("next unread", 1, true) ~= nil, "splash shows keys")
+  check(splash:find("Whatsapp", 1, true) ~= nil and splash:find("next unread", 1, true) ~= nil, "splash shows keys")
   local function splash_has(s)
     return table.concat(vim.api.nvim_buf_get_lines(S.bufs.chat, 0, -1, false), "\n"):find(s, 1, true) ~= nil
   end
@@ -159,23 +136,41 @@ return function()
   list.render()
   vim.api.nvim_win_set_cursor(S.wins.list, { 3, 0 })
   list.next_unread()
-  check(S.current == "111@s.whatsapp.net" and vim.api.nvim_win_get_cursor(S.wins.list)[1] == 2, "u wraps to the unread chat past the filter line")
-  S.current = nil
+  check(S.current == "111@s.whatsapp.net", "u opens the unread chat")
+  wa.show_list()
 
   wa.open_chat("111@s.whatsapp.net")
   check(wait_for(function() return S.messages["111@s.whatsapp.net"] ~= nil end), "messages loaded")
+  local alice_buf = S.bufs.chat
+  local alice_name = vim.api.nvim_buf_get_name(alice_buf)
+  check(vim.bo[alice_buf].buflisted and alice_name == "whatsapp://alice",
+    "conversation is a listed whatsapp://alice buffer")
   check(vim.api.nvim_win_get_cursor(S.wins.chat)[1] == vim.api.nvim_buf_line_count(S.bufs.chat), "opened chat starts at the bottom")
-  check(S.win_valid("compose"), "compose window created on open")
-  vim.api.nvim_set_current_win(S.wins.compose)
+
+  -- A listed conversation can be reached directly with :b, without going
+  -- through the chat list.
+  vim.cmd("enew")
+  vim.cmd("buffer " .. vim.fn.fnameescape(alice_name))
+  check(S.current == "111@s.whatsapp.net" and S.bufs.chat == alice_buf, ":b re-enters the conversation buffer")
+
+  wa.open_chat("222@g.us")
+  check(vim.api.nvim_buf_get_name(S.bufs.chat) == "whatsapp://group-climbing", "groups get a group- buffer name")
+  wa.open_chat("111@s.whatsapp.net")
+  check(not S.win_valid("compose"), "compose hidden until S is pressed")
+  wa.focus_compose()
+  check(S.win_valid("compose"), "S opens the compose split")
   vim.cmd("startinsert")
   vim.api.nvim_exec_autocmds("InsertEnter", {})
   vim.cmd("stopinsert")
   check(vim.wo[S.wins.compose].number == false, "compose pane keeps number off after InsertEnter")
   local chat_lines = vim.api.nvim_buf_get_lines(S.bufs.chat, 0, -1, false)
   local joined = table.concat(chat_lines, "\n")
-  check(joined:find("Alice: hello", 1, true) ~= nil, "chat shows incoming text")
+  check(joined:find("Alice (", 1, true) ~= nil and joined:find("  hello", 1, true) ~= nil, "chat shows sender header and indented text")
   check(joined:find("↳ hello", 1, true) ~= nil, "chat shows quoted reply context")
-  check(joined:find("me: see you", 1, true) ~= nil, "chat shows own message")
+  check(joined:find("me (", 1, true) ~= nil and joined:find("  see you", 1, true) ~= nil, "chat shows own message with a tick")
+  events["messages.read"]({ chat = "111@s.whatsapp.net", ids = { "m2" } })
+  local ticked = table.concat(vim.api.nvim_buf_get_lines(S.bufs.chat, 0, -1, false), "\n")
+  check(ticked:find("me (", 1, true) ~= nil and ticked:find("✓✓", 1, true) ~= nil, "read receipt adds the second tick")
 
   -- Remote names land in winbar, which evaluates %{} unless escaped.
   local marker = vim.fn.tempname()
@@ -200,13 +195,14 @@ return function()
   vim.cmd("write")
   check(wait_for(function()
     local l = table.concat(vim.api.nvim_buf_get_lines(S.bufs.chat, 0, -1, false), "\n")
-    return l:find("me: from nvim", 1, true) ~= nil
+    return l:find("me (", 1, true) ~= nil and l:find("  from nvim", 1, true) ~= nil
   end), ":w sends and echoes into the chat")
   check(vim.api.nvim_buf_get_lines(S.bufs.compose, 0, -1, false)[1] == "", "compose cleared after send")
 
   -- Replying means moving the cursor up to the quoted message; the sent
   -- message must still come into view, as on the phone.
   vim.api.nvim_win_set_cursor(S.wins.chat, { 1, 0 })
+  wa.focus_compose()
   vim.api.nvim_buf_set_lines(S.bufs.compose, 0, -1, false, { "after scrolling up" })
   vim.cmd("write")
   check(wait_for(function()
@@ -343,18 +339,7 @@ return function()
     local marks = image_marks()
     local kvl = marks[1][4].virt_lines
     check(#kvl >= 1 and #kvl <= 20 and vim.fn.strchars(kvl[1][2][1]) % 3 == 0, "placeholder rows are cell triplets")
-    check(marks[1][2] + 1 == vim.api.nvim_buf_line_count(S.bufs.chat) and not marks[1][4].virt_lines_above, "lines layout hangs the rows under the message")
-    S.opts.layout = "bubbles"
-    chat.render()
-    check(wait_for(function()
-      local ms = image_marks()
-      return ms[1] and ms[1][4].virt_lines_above == true
-    end, 5000), "bubbles layout puts the rows above the footer")
-    local bvl = image_marks()[1][4].virt_lines[1]
-    local footer = vim.api.nvim_buf_get_lines(S.bufs.chat, image_marks()[1][2], image_marks()[1][2] + 1, false)[1]
-    check(bvl[1][1]:match("│ $") ~= nil and bvl[3][1]:match(" │$") ~= nil and bvl[1][2] == "WhatsAppBubble", "picture rows carry the bubble's borders")
-    check(vim.fn.strdisplaywidth(bvl[1][1] .. bvl[3][1]) + vim.fn.strchars(bvl[2][1]) / 3 == vim.fn.strdisplaywidth(footer), "picture rows are as wide as the box")
-    S.opts.layout = "lines"
+    check(marks[1][2] + 1 == vim.api.nvim_buf_line_count(S.bufs.chat), "picture rows hang under the message")
     -- Reopening a chat rebuilds its message objects without the path; the
     -- picture must survive that.
     local old_m = msgs[#msgs]
@@ -390,7 +375,7 @@ return function()
   wa.toggle_help()
   local help_text = table.concat(vim.api.nvim_buf_get_lines(S.bufs.chat, 0, -1, false), "\n")
   check(S.help and vim.api.nvim_get_current_win() == S.wins.chat, "g? shows help in the chat pane and focuses it")
-  check(help_text:find("conversation", 1, true) ~= nil and help_text:find(":WhatsApp pair", 1, true) ~= nil, "help lists panes and commands")
+  check(help_text:find("conversation", 1, true) ~= nil and help_text:find(":Whatsapp pair", 1, true) ~= nil, "help lists panes and commands")
   wa.toggle_help()
   local back_text = table.concat(vim.api.nvim_buf_get_lines(S.bufs.chat, 0, -1, false), "\n")
   check(not S.help and vim.api.nvim_get_current_win() == S.wins.list, "closing help returns focus to the list")
@@ -401,7 +386,7 @@ return function()
   wa.open_chat("111@s.whatsapp.net")
   local opened_text = table.concat(vim.api.nvim_buf_get_lines(S.bufs.chat, 0, -1, false), "\n")
   check(not S.help and S.help_return == nil, "opening a chat clears the help flag")
-  check(opened_text:find("hello", 1, true) ~= nil and opened_text:find("WhatsApp keys", 1, true) == nil, "opening a chat replaces help with the conversation")
+  check(opened_text:find("hello", 1, true) ~= nil and opened_text:find("Whatsapp keys", 1, true) == nil, "opening a chat replaces help with the conversation")
   vim.api.nvim_set_current_win(S.wins.chat)
 
   -- Typing indicator: rows under the last message for the open chat only,
@@ -465,7 +450,7 @@ return function()
   wa.lock()
   check(S.locked and not client.running(), "manual lock stops the bridge and marks the store locked")
   local locked_text = table.concat(vim.api.nvim_buf_get_lines(S.bufs.chat, 0, -1, false), "\n")
-  check(locked_text:find("store locked", 1, true) ~= nil and locked_text:find(":WhatsApp unlock", 1, true) ~= nil,
+  check(locked_text:find("store locked", 1, true) ~= nil and locked_text:find(":Whatsapp unlock", 1, true) ~= nil,
     "locked splash names the unlock command")
   wa.open()
   check(wait_for(function() return #S.chats == 2 end), "reopening after lock restarts the bridge")
@@ -475,7 +460,7 @@ return function()
   -- method and emits the same event as the real bridge.
   S.locked, S.status.locked = true, true
   wa.unlock()
-  check(wait_for(function() return not S.locked end), ":WhatsApp unlock clears the locked state")
+  check(wait_for(function() return not S.locked end), ":Whatsapp unlock clears the locked state")
 
   -- pair.qr renders the code in the chat pane splash, pair.ok clears it.
   wa.pair()
@@ -493,10 +478,21 @@ return function()
   -- logout closes the view, forgets the session and stops the bridge.
   wa.logout()
   check(wait_for(function() return not client.running() end), "logout stops the bridge")
-  check(not S.layout_valid() and S.status.paired == false, "logout closes the tab and clears paired state")
+  check(not S.layout_valid() and S.status.paired == false, "logout closes the pane and clears paired state")
 
   wa.close()
-  check(not S.layout_valid(), "close tears down the tab")
+  check(not S.layout_valid(), "close tears down the pane")
+
+  -- The command-line modes build a single pane or the old list+chat tab.
+  wa.open("vertical")
+  check(S.mode == "vertical" and S.wins.list == S.wins.chat, "vertical mode uses one right-hand pane")
+  wa.close()
+  wa.open("horizontal")
+  check(S.mode == "horizontal" and S.wins.list == S.wins.chat, "horizontal mode uses one pane below")
+  wa.close()
+  wa.open("tab")
+  check(S.mode == "tab" and S.wins.list ~= S.wins.chat and vim.api.nvim_tabpage_is_valid(S.tab), "tab mode keeps list and chat panes")
+  wa.close()
   client.stop()
 
   if failures > 0 then

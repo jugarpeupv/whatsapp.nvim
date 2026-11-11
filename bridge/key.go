@@ -108,12 +108,12 @@ func storeKey(ctx context.Context, cfg EncryptionConfig, dir string) ([]byte, er
 		}
 		if keyExists {
 			if sessionKind == storePlaintext || messageKind == storePlaintext {
-				return nil, errors.New("store is not encrypted; run :WhatsApp logout and pair again to enable encryption")
+				return nil, errors.New("store is not encrypted; run :Whatsapp logout and pair again to enable encryption")
 			}
 			return decryptStoreKey(ctx, cfg, keyFile)
 		}
 		if sessionKind == storePlaintext || messageKind == storePlaintext {
-			return nil, errors.New("store is not encrypted; run :WhatsApp logout and pair again to enable encryption")
+			return nil, errors.New("store is not encrypted; run :Whatsapp logout and pair again to enable encryption")
 		}
 		if sessionKind == storeEncrypted || messageKind == storeEncrypted {
 			return nil, errors.New("encrypted store is missing session.key.gpg; restore that file or log out and pair again")

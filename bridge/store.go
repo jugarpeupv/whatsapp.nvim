@@ -29,6 +29,7 @@ type Message struct {
 	Text       string `json:"text"`
 	TS         int64  `json:"ts"`
 	FromMe     bool   `json:"from_me"`
+	Read       bool   `json:"read,omitempty"`
 	MediaType  string `json:"media_type,omitempty"`
 	Filename   string `json:"filename,omitempty"`
 	QuotedID   string `json:"quoted_id,omitempty"`
@@ -59,6 +60,7 @@ CREATE TABLE IF NOT EXISTS messages (
 	text TEXT NOT NULL DEFAULT '',
 	ts INTEGER NOT NULL,
 	from_me INTEGER NOT NULL DEFAULT 0,
+	read INTEGER NOT NULL DEFAULT 0,
 	media_type TEXT NOT NULL DEFAULT '',
 	filename TEXT NOT NULL DEFAULT '',
 	quoted_id TEXT NOT NULL DEFAULT '',
@@ -78,8 +80,42 @@ func OpenStore(path string, key []byte) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("init schema: %w", err)
 	}
+	if err := ensureReadColumn(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate message read state: %w", err)
+	}
 	restrictFile(path)
 	return &Store{db: db}, nil
+}
+
+// ensureReadColumn upgrades stores created before per-message read ticks.
+func ensureReadColumn(db *sql.DB) error {
+	rows, err := db.Query(`PRAGMA table_info(messages)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	hasRead := false
+	for rows.Next() {
+		var cid, notnull, pk int
+		var name, typ string
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
+			return err
+		}
+		if name == "read" {
+			hasRead = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	_ = rows.Close()
+	if hasRead {
+		return nil
+	}
+	_, err = db.Exec(`ALTER TABLE messages ADD COLUMN read INTEGER NOT NULL DEFAULT 0`)
+	return err
 }
 
 func (s *Store) Close() error { return s.db.Close() }
@@ -102,9 +138,9 @@ func (s *Store) UpsertChat(jid, name string, isGroup bool, ts int64) error {
 func (s *Store) InsertMessage(m Message) (bool, error) {
 	res, err := s.db.Exec(`
 		INSERT OR IGNORE INTO messages
-			(id, chat_jid, sender, sender_name, text, ts, from_me, media_type, filename, quoted_id, raw)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		m.ID, m.ChatJID, m.Sender, m.SenderName, m.Text, m.TS, boolInt(m.FromMe),
+			(id, chat_jid, sender, sender_name, text, ts, from_me, read, media_type, filename, quoted_id, raw)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		m.ID, m.ChatJID, m.Sender, m.SenderName, m.Text, m.TS, boolInt(m.FromMe), boolInt(m.Read),
 		m.MediaType, m.Filename, m.QuotedID, m.raw)
 	if err != nil {
 		return false, err
@@ -161,6 +197,33 @@ func (s *Store) IncrementUnread(jid string) error {
 func (s *Store) ClearUnread(jid string) error {
 	_, err := s.db.Exec(`UPDATE chats SET unread = 0 WHERE jid = ?`, jid)
 	return err
+}
+
+// MarkReadMessages records read receipts for our own outgoing messages.
+// WhatsApp sends these per message, so a later list render can show ticks.
+func (s *Store) MarkReadMessages(jid string, ids []string) (int, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	n := 0
+	for _, id := range ids {
+		res, err := tx.Exec(`UPDATE messages SET read = 1 WHERE chat_jid = ? AND id = ? AND from_me = 1`, jid, id)
+		if err != nil {
+			return 0, err
+		}
+		if changed, _ := res.RowsAffected(); changed > 0 {
+			n++
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return n, nil
 }
 
 func (s *Store) SetUnread(jid string, n int) error {
@@ -242,7 +305,7 @@ func (s *Store) ListMessages(jid string, limit int, beforeTS int64) ([]Message, 
 		beforeTS = time.Now().Unix() + 86400
 	}
 	rows, err := s.db.Query(`
-		SELECT m.id, m.chat_jid, m.sender, m.sender_name, m.text, m.ts, m.from_me, m.media_type, m.filename, m.quoted_id,
+		SELECT m.id, m.chat_jid, m.sender, m.sender_name, m.text, m.ts, m.from_me, m.read, m.media_type, m.filename, m.quoted_id,
 			COALESCE((SELECT q.text FROM messages q WHERE q.id = m.quoted_id AND q.chat_jid = m.chat_jid), ''), m.raw
 		FROM messages m
 		WHERE m.chat_jid = ? AND m.ts < ?
@@ -254,12 +317,13 @@ func (s *Store) ListMessages(jid string, limit int, beforeTS int64) ([]Message, 
 	var out []Message
 	for rows.Next() {
 		var m Message
-		var fromMe int
-		if err := rows.Scan(&m.ID, &m.ChatJID, &m.Sender, &m.SenderName, &m.Text, &m.TS, &fromMe,
+		var fromMe, read int
+		if err := rows.Scan(&m.ID, &m.ChatJID, &m.Sender, &m.SenderName, &m.Text, &m.TS, &fromMe, &read,
 			&m.MediaType, &m.Filename, &m.QuotedID, &m.QuotedText, &m.raw); err != nil {
 			return nil, err
 		}
 		m.FromMe = fromMe == 1
+		m.Read = read == 1
 		out = append(out, m)
 	}
 	if err := rows.Err(); err != nil {
@@ -276,13 +340,14 @@ func (s *Store) ListMessages(jid string, limit int, beforeTS int64) ([]Message, 
 
 func (s *Store) GetMessage(jid, id string) (Message, error) {
 	var m Message
-	var fromMe int
+	var fromMe, read int
 	err := s.db.QueryRow(`
-		SELECT id, chat_jid, sender, sender_name, text, ts, from_me, media_type, filename, quoted_id, raw
+		SELECT id, chat_jid, sender, sender_name, text, ts, from_me, read, media_type, filename, quoted_id, raw
 		FROM messages WHERE chat_jid = ? AND id = ?`, jid, id).
-		Scan(&m.ID, &m.ChatJID, &m.Sender, &m.SenderName, &m.Text, &m.TS, &fromMe,
+		Scan(&m.ID, &m.ChatJID, &m.Sender, &m.SenderName, &m.Text, &m.TS, &fromMe, &read,
 			&m.MediaType, &m.Filename, &m.QuotedID, &m.raw)
 	m.FromMe = fromMe == 1
+	m.Read = read == 1
 	return m, err
 }
 

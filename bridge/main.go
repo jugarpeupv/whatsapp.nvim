@@ -59,7 +59,7 @@ func main() {
 
 	// A locked store is not fatal: pinentry may have been dismissed, or the
 	// GPG key may be on a card that is not plugged in yet. Keep the process
-	// alive so :WhatsApp unlock can try again without losing the UI.
+	// alive so :Whatsapp unlock can try again without losing the UI.
 	openErr := app.Open(ctx)
 	out.Emit("ready", app.Status())
 	if openErr == nil {

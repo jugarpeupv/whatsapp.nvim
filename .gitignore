@@ -1,2 +1,7 @@
+bin/
 scratch/
 .DS_Store
+*.db
+*.db-wal
+*.db-shm
+bridge/bridge
