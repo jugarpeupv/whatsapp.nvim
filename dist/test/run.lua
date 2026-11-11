@@ -76,7 +76,9 @@ return function()
   local head_w, foot_w
   for _, l in ipairs(blines) do
     if l:find("╭─ Alice", 1, true) then head_w = vim.fn.strdisplaywidth(l) end
-    if l:find("22:13", 1, true) then foot_w = vim.fn.strdisplaywidth(l) end
+    -- The footer time depends on the local timezone; find the box edge, not
+    -- a hard-coded clock value.
+    if not foot_w and l:find("╰", 1, true) then foot_w = vim.fn.strdisplaywidth(l) end
   end
   check(head_w == foot_w, "box header and footer have equal width")
   local me_head
@@ -457,6 +459,23 @@ return function()
   vim.notify = real_notify
 
   require("test.security")(check, events)
+
+  -- Manual lock stops the bridge and hides the conversation. Reopening starts
+  -- a fresh bridge; with encryption off the ready event clears the lock.
+  wa.lock()
+  check(S.locked and not client.running(), "manual lock stops the bridge and marks the store locked")
+  local locked_text = table.concat(vim.api.nvim_buf_get_lines(S.bufs.chat, 0, -1, false), "\n")
+  check(locked_text:find("store locked", 1, true) ~= nil and locked_text:find(":WhatsApp unlock", 1, true) ~= nil,
+    "locked splash names the unlock command")
+  wa.open()
+  check(wait_for(function() return #S.chats == 2 end), "reopening after lock restarts the bridge")
+  check(not S.locked and not S.status.locked, "ready clears the locked state")
+
+  -- A locked bridge can be unlocked in place; the fake answers the protocol
+  -- method and emits the same event as the real bridge.
+  S.locked, S.status.locked = true, true
+  wa.unlock()
+  check(wait_for(function() return not S.locked end), ":WhatsApp unlock clears the locked state")
 
   -- pair.qr renders the code in the chat pane splash, pair.ok clears it.
   wa.pair()

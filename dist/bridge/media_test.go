@@ -41,7 +41,7 @@ func TestStreamingDownloadDecryptsAndVerifiesWithWhatsmeow(t *testing.T) {
 	mac.Write(encrypted)
 	payload := append(encrypted, mac.Sum(nil)[:10]...)
 	plainHash, encryptedHash := sha256.Sum256(plain), sha256.Sum256(payload)
-	w, err := NewWA(context.Background(), t.TempDir(), NewWriter(io.Discard))
+	w, err := NewWA(context.Background(), t.TempDir(), NewWriter(io.Discard), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,7 +171,7 @@ func TestDownloadDeadlineCancelsWorkAndRemovesPartial(t *testing.T) {
 }
 
 func TestDownloadChecksDeclaredSizeAndConcurrencyBeforeNetwork(t *testing.T) {
-	w, err := NewWA(context.Background(), t.TempDir(), NewWriter(io.Discard))
+	w, err := NewWA(context.Background(), t.TempDir(), NewWriter(io.Discard), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -194,7 +194,7 @@ func TestDownloadChecksDeclaredSizeAndConcurrencyBeforeNetwork(t *testing.T) {
 }
 
 func TestDownloadRevalidatesLegacyFilename(t *testing.T) {
-	w, err := NewWA(context.Background(), t.TempDir(), NewWriter(io.Discard))
+	w, err := NewWA(context.Background(), t.TempDir(), NewWriter(io.Discard), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

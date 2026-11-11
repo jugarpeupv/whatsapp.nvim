@@ -4,6 +4,7 @@ local M = {}
 
 local proc = nil
 local next_id = 0
+local generation = 0
 local pending = {}
 local listeners = {}
 local partial = ""
@@ -67,7 +68,7 @@ function M.running()
   return proc ~= nil
 end
 
-function M.start(bin, store_dir)
+function M.start(bin, store_dir, extra)
   if proc then
     return true
   end
@@ -75,13 +76,25 @@ function M.start(bin, store_dir)
     vim.notify("whatsapp.nvim: bridge not found at " .. bin .. " (run make)", vim.log.levels.ERROR)
     return false
   end
-  proc = vim.system({ bin, "-store", store_dir }, {
+  local cmd = { bin, "-store", store_dir }
+  for _, arg in ipairs(extra or {}) do
+    table.insert(cmd, arg)
+  end
+  generation = generation + 1
+  local gen = generation
+  partial = ""
+  proc = vim.system(cmd, {
     stdin = true,
     text = true,
     stdout = on_stdout,
     stderr = on_stderr,
   }, function(res)
     vim.schedule(function()
+      -- An exit callback from a bridge we already stopped must not clear the
+      -- process that replaced it: lock and unlock can race within a frame.
+      if gen ~= generation then
+        return
+      end
       proc = nil
       for id, cb in pairs(pending) do
         pending[id] = nil
@@ -97,8 +110,17 @@ end
 
 function M.stop()
   if proc then
-    proc:kill("sigterm")
+    generation = generation + 1
+    local p = proc
     proc = nil
+    p:kill("sigterm")
+    -- Give the bridge a moment to release its flock before a lock/unlock
+    -- starts another one; the wait is bounded because kill is not a request.
+    pcall(p.wait, p, 1000)
+  end
+  for id, cb in pairs(pending) do
+    pending[id] = nil
+    cb("bridge stopped", nil)
   end
 end
 

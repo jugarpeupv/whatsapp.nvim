@@ -6,7 +6,9 @@ local commands = {
   { ":WhatsApp", "open, or jump to the WhatsApp tab" },
   { ":WhatsApp Alice", "open the chat matching Alice" },
   { ":WhatsApp pair", "link this device (shows the QR code)" },
-  { ":WhatsApp logout", "unlink this device" },
+  { ":WhatsApp unlock", "decrypt the store with your GPG key" },
+  { ":WhatsApp lock", "close the session and drop the key" },
+  { ":WhatsApp logout", "unlink this device and wipe the store" },
   { ":WhatsApp stop", "close and stop the bridge" },
 }
 

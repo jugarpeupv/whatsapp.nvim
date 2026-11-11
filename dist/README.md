@@ -37,7 +37,7 @@ lazy.nvim:
   "dwmkerr/whatsapp.nvim",
   build = "make build",
   config = function()
-    vim.opt.rtp:append(vim.fn.stdpath("data") .. "/lazy/whatsapp.nvim/nvim")
+    vim.opt.rtp:append(vim.fn.stdpath("data") .. "/lazy/whatsapp.nvim/dist")
     require("whatsapp").setup()
   end,
 }
@@ -63,7 +63,9 @@ While a chat is open and the terminal has focus the device is marked online, so 
 | `:WhatsApp toggle` | Open or close |
 | `:WhatsApp Alice` | Open and jump to the chat matching "Alice" |
 | `:WhatsApp pair` | Show the pairing QR code in the chat pane |
-| `:WhatsApp logout` | Unlink this device from your phone and forget the local session |
+| `:WhatsApp unlock` | Decrypt the store with your GPG key |
+| `:WhatsApp lock` | Close the session, stop the bridge and drop the key |
+| `:WhatsApp logout` | Unlink this device from your phone and wipe the local store |
 | `:WhatsApp status` | Bridge status |
 | `:WhatsApp stop` | Close and kill the bridge |
 | `:WhatsApp names` | Swap bare phone numbers for contact names; runs by itself on connect, rarely needed |
@@ -136,6 +138,14 @@ require("whatsapp").setup({
   mark_read_on_view = true, -- send read receipts when you open a chat
   default_reaction = "👍",
   images = { mode = "auto" }, -- "tag" or "kitty"; auto picks kitty when the terminal supports it
+  encryption = "none",       -- "none" or "gpg"; see Encrypted store below
+  gpg = {
+    key = "",                -- fingerprint; falls back to WHATSAPP_GPG_FINGERPRINT
+    -- program = "/opt/homebrew/bin/gpg",
+    -- key_file = "/path/to/session.key.gpg",
+    -- home = "/path/to/gnupg",
+  },
+  lock_on_resume = true,     -- lock after a long wall-clock jump (system suspend)
 })
 ```
 
@@ -158,12 +168,40 @@ printf '{"id":1,"method":"status"}\n' | ./bin/wa-bridge -store /tmp/wa
 
 One JSON object per line. Requests carry an `id` and `method`; responses echo the `id` with `result` or `error`; events have no `id`.
 
-Methods: `status`, `pair.start`, `logout`, `chats.list`, `messages.list {jid, limit, before}`, `message.send {jid, text, reply_to}`, `message.react {jid, id, emoji}`, `chat.read {jid}`, `chat.unread {jid}`, `presence {available}`, `media.download {jid, id}`, `contacts.search {query}`.
+Methods: `status`, `unlock`, `pair.start`, `logout`, `chats.list`, `messages.list {jid, limit, before}`, `message.send {jid, text, reply_to}`, `message.react {jid, id, emoji}`, `chat.read {jid}`, `chat.unread {jid}`, `presence {available}`, `media.download {jid, id}`, `contacts.search {query}`.
 
-Events: `ready`, `unpaired`, `connected`, `disconnected`, `logged_out`, `pair.qr {lines}`, `pair.ok`, `pair.timeout`, `pair.error`, `typing {chat, sender, sender_name, state, media}`, `message {chat_name, message}`, `chats.changed`, `sync.progress`, `sync.done`, `appstate.waiting {name}`, `appstate.synced {name}`, `fatal`.
+Events: `ready`, `unlocked`, `unpaired`, `connected`, `disconnected`, `logged_out`, `pair.qr {lines}`, `pair.ok`, `pair.timeout`, `pair.error`, `typing {chat, sender, sender_name, state, media}`, `message {chat_name, message}`, `chats.changed`, `sync.progress`, `sync.done`, `appstate.waiting {name}`, `appstate.synced {name}`, `fatal`.
+
+## Encrypted store
+
+`encryption = "gpg"` keeps `session.db` and `messages.db` encrypted with SQLCipher. A random 32-byte key protects them; that key is stored as `session.key.gpg`, encrypted to your GPG key. GPG is only asked for the small key, never for the whole database, and the passphrase is handled by gpg-agent/pinentry (for example `pinentry-mac`), not by Neovim.
+
+```lua
+require("whatsapp").setup({
+  encryption = "gpg",
+  -- gpg.key is optional; if empty, WHATSAPP_GPG_FINGERPRINT is used.
+  gpg = { key = "YOUR_GPG_FINGERPRINT" },
+})
+```
+
+The fingerprint can come from the environment instead of the config, which keeps it out of a dotfiles repository:
+
+```sh
+export WHATSAPP_GPG_FINGERPRINT=YOUR_GPG_FINGERPRINT
+```
+
+`gpg.key` wins when both are set. The fingerprint is public; the passphrase still goes only to gpg-agent/pinentry.
+
+Enabling encryption on an existing plaintext store is deliberately not automatic. Run `:WhatsApp logout`, enable the option, and pair again. The first run creates the wrapped key; later runs decrypt it at startup. If the GPG prompt is cancelled, the bridge stays locked and `:WhatsApp unlock` retries without restarting the editor.
+
+The session is locked by `:WhatsApp lock`, when Neovim exits, and after a system suspend/wake detected by a wall-clock jump (`lock_on_resume`). There is no lock on focus changes or idle time: tabbing to another application leaves the session alone. Locking stops the bridge, so messages are queued by WhatsApp until you unlock. Exiting or suspending does not leave plaintext on disk; the databases are encrypted even while the bridge is running.
+
+The lock is only as strong as GPG's prompt. If gpg-agent has the passphrase cached, or pinentry-mac has saved it in the macOS Keychain, `gpg --decrypt` can return the key without asking. Disable "Save in Keychain" in pinentry-mac and set `default-cache-ttl 0` (and `max-cache-ttl 0`) in `gpg-agent.conf` if you want every unlock to require the passphrase or a smartcard touch. GPG runs outside Neovim's input: pinentry-mac works for a local macOS session; over SSH use pinentry-curses with `GPG_TTY` set.
+
+`logout` closes the container and deletes `session.db*`, `messages.db*`, `session.key.gpg` and `media/`. Downloaded media is a cache, not part of SQLCipher, so it stays plaintext while it exists.
 
 ## Privacy
 
-Everything stays on your machine in the store directory: the session keys, the message database, and downloaded media. Nothing is encrypted at rest. Keep the directory out of cloud-synced folders and backups.
+Everything stays on your machine in the store directory: the session keys, the message database, and downloaded media. Encrypt the store if the directory might be copied, backed up or synced. Keep it out of cloud-synced folders regardless.
 
 The store is created owner-only (`0700`, databases `0600`). Display names have control characters removed and line breaks replaced with spaces; winbar text is also escaped. Media paths are sanitised, and image, video and audio extensions come from a small list of recognised MIME types for that media family. Unknown types become `.bin`. A recognised extension does not establish that a file is safe: opening any attachment requires confirmation.

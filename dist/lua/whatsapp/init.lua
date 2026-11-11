@@ -23,6 +23,14 @@ local defaults = {
   mark_read_on_view = true,
   default_reaction = "👍",
   layout = "bubbles", -- or "lines"
+  encryption = "none", -- "gpg" wraps the SQLCipher key with a GPG key
+  gpg = {
+    key = "", -- fingerprint; required for encryption = "gpg"
+    program = nil, -- defaults to gpg in PATH
+    key_file = nil, -- defaults to <store>/session.key.gpg
+    home = nil, -- optional GNUPGHOME
+  },
+  lock_on_resume = true, -- lock after a long wall-clock jump (system suspend)
   images = {
     mode = "auto", -- "auto" | "tag" | "kitty", see docs/configuration.md
     max_width = 60, -- cells; pictures fill the bubble up to this
@@ -53,6 +61,47 @@ end
 
 local function notify(msg, level)
   vim.notify("WhatsApp: " .. msg, level or vim.log.levels.INFO)
+end
+
+local function encrypted()
+  return S.opts and S.opts.encryption == "gpg"
+end
+
+local function locked()
+  return S.locked or (S.status and S.status.locked == true)
+end
+
+-- GPG options are not secrets: the fingerprint and the encrypted key file can
+-- live in argv. The passphrase never leaves pinentry/gpg-agent.
+local function bridge_args()
+  if not encrypted() then
+    return {}
+  end
+  local gpg = S.opts.gpg or {}
+  local key = gpg.key
+  if not key or key == "" then
+    key = vim.env.WHATSAPP_GPG_FINGERPRINT
+  end
+  key = key and vim.trim(tostring(key)) or ""
+  if key == "" then
+    notify("encryption = 'gpg' needs gpg.key or WHATSAPP_GPG_FINGERPRINT", vim.log.levels.ERROR)
+    return nil
+  end
+  local args = { "-encryption", "gpg", "-gpg-key", key }
+  if gpg.program and gpg.program ~= "" then
+    local program = vim.fn.exepath(gpg.program)
+    table.insert(args, "-gpg-program")
+    table.insert(args, program ~= "" and program or gpg.program)
+  end
+  if gpg.key_file and gpg.key_file ~= "" then
+    table.insert(args, "-gpg-key-file")
+    table.insert(args, gpg.key_file)
+  end
+  if gpg.home and gpg.home ~= "" then
+    table.insert(args, "-gpg-home")
+    table.insert(args, gpg.home)
+  end
+  return args
 end
 
 -- Incoming-message notifications are coalesced into one line: several
@@ -88,7 +137,7 @@ end
 -- with a chat on screen. WhatsApp only sends typing notifications to
 -- devices that are online.
 local function set_presence(available)
-  if S.available == available or not client.running() then
+  if S.available == available or not client.running() or locked() then
     return
   end
   S.available = available
@@ -96,6 +145,7 @@ local function set_presence(available)
 end
 
 local typing_timer = nil
+local resume_timer = nil
 
 local function stop_typing()
   if typing_timer then
@@ -128,10 +178,35 @@ end
 local function wire_events()
   client.clear_listeners()
   client.on("ready", function(data)
+    -- A ready event from a bridge that was stopped mid-unlock must not make
+    -- the UI claim the store is open again.
+    if S.locked and not S.unlocking then
+      return
+    end
     S.status = data
+    S.locked = data.locked == true
+    S.unlocking = false
+    S.unlock_error = data.error
     S.fatal = nil
     S.replaced = false
+    if S.locked and data.error then
+      notify("store locked: " .. data.error, vim.log.levels.WARN)
+    end
     chat.render()
+    if not S.locked then
+      M.refresh_chats()
+    end
+  end)
+  client.on("unlocked", function(data)
+    if S.locked and not S.unlocking then
+      return
+    end
+    S.status = data
+    S.locked = false
+    S.unlocking = false
+    S.unlock_error = nil
+    chat.render()
+    M.refresh_chats()
   end)
   client.on("unpaired", function()
     S.status.paired = false
@@ -139,6 +214,9 @@ local function wire_events()
     notify("not paired yet, run :WhatsApp pair", vim.log.levels.WARN)
   end)
   client.on("connected", function()
+    if locked() then
+      return
+    end
     S.status.connected = true
     S.replaced = false
     chat.render()
@@ -225,7 +303,7 @@ local function wire_events()
     M.refresh_chats()
   end)
   client.on("typing", function(d)
-    if d.chat ~= S.current then
+    if locked() or d.chat ~= S.current then
       return
     end
     if d.state == "composing" then
@@ -235,6 +313,9 @@ local function wire_events()
     end
   end)
   client.on("message", function(d)
+    if locked() then
+      return
+    end
     local m = d.message
     if S.messages[m.chat_jid] then
       table.insert(S.messages[m.chat_jid], m)
@@ -261,8 +342,9 @@ local function wire_events()
     notify(d.error, vim.log.levels.ERROR)
   end)
   client.on("exit", function(d)
-    -- A refused start already explained itself through "fatal".
-    if d.code ~= 0 and not S.fatal then
+    -- A refused start already explained itself through "fatal", and a lock
+    -- stops the process on purpose.
+    if d.code ~= 0 and not S.fatal and not S.locked then
       notify("bridge exited with code " .. d.code .. "\n" .. table.concat(d.stderr, "\n"), vim.log.levels.ERROR)
     end
     chat.render()
@@ -272,6 +354,9 @@ end
 -- Data ---------------------------------------------------------------------
 
 function M.refresh_names()
+  if locked() or not client.running() then
+    return
+  end
   client.request("names.refresh", nil, function(err, res)
     if err then
       notify(err, vim.log.levels.ERROR)
@@ -289,6 +374,9 @@ end
 -- "Mark as unread". Marking the open chat unread also closes it, otherwise
 -- the next incoming message would read it again.
 function M.set_unread(jid, unread)
+  if locked() or not client.running() then
+    return
+  end
   local c = jid and S.chat_by_jid[jid]
   if not c then
     return
@@ -348,7 +436,13 @@ function M.focus_next(dir)
 end
 
 function M.refresh_chats()
+  if locked() or not client.running() then
+    return
+  end
   client.request("chats.list", nil, function(err, chats)
+    if locked() then
+      return
+    end
     if err then
       notify(err, vim.log.levels.ERROR)
       return
@@ -377,6 +471,10 @@ function M.open_chat(jid)
   if not jid then
     return
   end
+  if locked() then
+    notify("store is locked, run :WhatsApp unlock", vim.log.levels.WARN)
+    return
+  end
   dismiss_help()
   S.view = nil
   if S.current ~= jid then
@@ -389,6 +487,9 @@ function M.open_chat(jid)
   chat.render()
   list.render()
   client.request("messages.list", { jid = jid, limit = S.opts.page_size }, function(err, msgs)
+    if locked() then
+      return
+    end
     if err then
       notify(err, vim.log.levels.ERROR)
       return
@@ -444,6 +545,9 @@ end
 -- Actions ------------------------------------------------------------------
 
 function M.send_compose(jid)
+  if locked() or not client.running() then
+    return
+  end
   jid = jid or S.current
   if not jid then
     notify("no chat open", vim.log.levels.WARN)
@@ -469,6 +573,9 @@ function M.send_compose(jid)
   draft.sending = true
   client.request("message.send", params, function(err, sent)
     draft.sending = false
+    if locked() then
+      return
+    end
     if err then
       notify("send failed: " .. err, vim.log.levels.ERROR)
       return
@@ -792,14 +899,28 @@ end
 
 function M.open()
   if not client.running() then
+    local args = bridge_args()
+    if args == nil then
+      return
+    end
     wire_events()
     -- Fresh bridge, fresh status: a stale "connected" would skip the
     -- connecting splash.
-    S.status = { paired = nil, connected = false }
+    S.status = { paired = nil, connected = false, locked = S.locked, encrypted = encrypted() }
     S.out_of_sync = {}
     S.synced = false
     S.sync = nil
-    if not client.start(S.opts.bin, S.opts.store) then
+    S.unlock_error = nil
+    if S.locked then
+      if encrypted() then
+        S.unlocking = true
+      else
+        S.locked = false
+        S.status.locked = false
+      end
+    end
+    if not client.start(S.opts.bin, S.opts.store, args) then
+      S.unlocking = false
       return
     end
   end
@@ -812,7 +933,7 @@ function M.open()
 end
 
 function M.toggle()
-  if S.layout_valid() and vim.api.nvim_get_current_tabpage() == S.tab then
+  if not S.locked and S.layout_valid() and vim.api.nvim_get_current_tabpage() == S.tab then
     M.close()
   else
     M.open()
@@ -835,14 +956,91 @@ end
 function M.stop()
   M.close()
   S.available = false
+  S.locked = encrypted()
+  S.unlocking = false
   client.stop()
   notify("bridge stopped")
+end
+
+-- Lock hides the conversation, stops the bridge, and drops the SQLCipher key
+-- with the process. Whatever is on disk stays encrypted.
+function M.lock()
+  local was_running = client.running()
+  S.available = false
+  S.locked = true
+  S.unlocking = false
+  S.unlock_error = nil
+  S.status = { paired = nil, connected = false, locked = true, encrypted = encrypted() }
+  S.fatal = nil
+  S.replaced = false
+  S.current = nil
+  S.messages = {}
+  S.chats = {}
+  S.chat_by_jid = {}
+  S.qr = nil
+  S.pairing = false
+  S.help = false
+  S.help_return = nil
+  S.view = nil
+  S.synced = false
+  S.sync = nil
+  S.out_of_sync = {}
+  stop_typing()
+  if S.win_valid("compose") then
+    vim.api.nvim_win_close(S.wins.compose, true)
+    S.wins.compose = nil
+  end
+  client.stop()
+  if S.layout_valid() then
+    list.render()
+    chat.render()
+  end
+  if was_running then
+    notify("locked")
+  end
+end
+
+function M.unlock()
+  if not client.running() then
+    M.open()
+    return
+  end
+  if not locked() then
+    M.open()
+    return
+  end
+  if S.unlocking then
+    notify("already waiting for GPG")
+    return
+  end
+  S.unlocking = true
+  S.unlock_error = nil
+  chat.render()
+  notify("unlocking with GPG…")
+  client.request("unlock", nil, function(err, st)
+    S.unlocking = false
+    if err then
+      S.locked = true
+      S.unlock_error = err
+      notify("unlock failed: " .. err, vim.log.levels.ERROR)
+    else
+      S.locked = false
+      S.status = st or S.status
+      S.unlock_error = nil
+      M.refresh_chats()
+    end
+    chat.render()
+  end)
 end
 
 -- The QR code renders in the chat pane, so pairing opens the view first.
 function M.pair()
   M.open()
   if not client.running() then
+    return
+  end
+  if locked() then
+    notify("store is locked, run :WhatsApp unlock", vim.log.levels.WARN)
     return
   end
   dismiss_help()
@@ -867,6 +1065,9 @@ function M.logout()
   client.request("logout", nil, function(err)
     M.close()
     client.stop()
+    S.status.paired = false
+    S.status.connected = false
+    S.synced = false
     if err then
       notify(err, vim.log.levels.WARN)
     end
@@ -877,6 +1078,10 @@ end
 function M.status()
   if not client.running() then
     notify("bridge not running")
+    return
+  end
+  if locked() then
+    notify(vim.inspect(S.status))
     return
   end
   client.request("status", nil, function(err, st)
@@ -890,6 +1095,10 @@ end
 
 function M.open_by_name(name)
   M.open()
+  if locked() then
+    notify("store is locked, run :WhatsApp unlock", vim.log.levels.WARN)
+    return
+  end
   local needle = name:lower()
   local function try()
     for _, c in ipairs(S.chats) do
@@ -916,9 +1125,45 @@ end
 function M.setup(opts)
   S.opts = vim.tbl_deep_extend("force", defaults, opts or {})
   S.opts.bin = S.opts.bin or (plugin_root() .. "/bin/wa-bridge")
+  if type(S.opts.gpg) ~= "table" then
+    S.opts.gpg = vim.deepcopy(defaults.gpg)
+  end
+  if S.opts.encryption == "gpg" and (not S.opts.gpg.program or S.opts.gpg.program == "") then
+    -- Neovim launched from a GUI can have a PATH without Homebrew. Resolve
+    -- the absolute path here rather than relying on the child's environment.
+    local gpg = vim.fn.exepath("gpg")
+    if gpg ~= "" then
+      S.opts.gpg.program = gpg
+    end
+  end
   define_highlights()
   vim.api.nvim_create_autocmd("ColorScheme", { callback = define_highlights })
+  -- Exiting Neovim ends the bridge; SQLCipher has already written ciphertext,
+  -- so there is nothing to encrypt on the way out.
   vim.api.nvim_create_autocmd("VimLeavePre", { callback = client.stop })
+
+  -- Neovim cannot see the OS suspend event. A timer that wakes with a large
+  -- wall-clock gap is the portable signal: sleep/resume leaves a jump the
+  -- monotonic clock does not necessarily show. Lock after the resume, which
+  -- keeps the key out of the new session even though it was in RAM during
+  -- suspend.
+  if resume_timer then
+    resume_timer:stop()
+    resume_timer:close()
+    resume_timer = nil
+  end
+  if S.opts.lock_on_resume then
+    local last = os.time()
+    resume_timer = vim.uv.new_timer()
+    resume_timer:start(30000, 30000, vim.schedule_wrap(function()
+      local now = os.time()
+      local gap = now - last
+      last = now
+      if gap > 120 and encrypted() and client.running() and not S.locked then
+        M.lock()
+      end
+    end))
+  end
 end
 
 return M

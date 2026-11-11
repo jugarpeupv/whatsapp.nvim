@@ -21,10 +21,17 @@ func main() {
 	defaultDir, _ := os.UserHomeDir()
 	defaultDir = filepath.Join(defaultDir, ".local", "share", "nvim", "whatsapp")
 	dir := flag.String("store", defaultDir, "directory for session and message databases")
+	encryption := flag.String("encryption", "none", "store encryption: none or gpg")
+	gpgKey := flag.String("gpg-key", "", "GPG fingerprint used to wrap the store key (default: WHATSAPP_GPG_FINGERPRINT)")
+	gpgProgram := flag.String("gpg-program", "", "gpg executable (default: gpg in PATH)")
+	gpgKeyFile := flag.String("gpg-key-file", "", "wrapped store key (default: <store>/session.key.gpg)")
+	gpgHome := flag.String("gpg-home", "", "optional GNUPGHOME for gpg")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
 	// Everything this process creates holds private data (keys, messages, media).
 	syscall.Umask(0o077)
+	// A core dump would copy the SQLCipher key and decrypted pages to disk.
+	_ = syscall.Setrlimit(syscall.RLIMIT_CORE, &syscall.Rlimit{Cur: 0, Max: 0})
 	if *showVersion {
 		fmt.Println("wa-bridge", version)
 		return
@@ -44,26 +51,33 @@ func main() {
 		os.Exit(1)
 	}
 	defer lock.Close()
-	wa, err := NewWA(ctx, *dir, out)
-	if err != nil {
-		out.Emit("fatal", map[string]string{"error": err.Error()})
-		os.Exit(1)
+	app := NewApp(ctx, *dir, out, EncryptionConfig{
+		Mode: *encryption, GPGKey: resolveGPGKey(*gpgKey), Program: *gpgProgram,
+		KeyFile: *gpgKeyFile, Home: *gpgHome,
+	})
+	defer app.Close()
+
+	// A locked store is not fatal: pinentry may have been dismissed, or the
+	// GPG key may be on a card that is not plugged in yet. Keep the process
+	// alive so :WhatsApp unlock can try again without losing the UI.
+	openErr := app.Open(ctx)
+	out.Emit("ready", app.Status())
+	if openErr == nil {
+		if err := app.Connect(ctx); err != nil {
+			out.Emit("error", map[string]string{"error": err.Error()})
+		}
+	} else {
+		fmt.Fprintln(os.Stderr, "wa-bridge:", openErr)
 	}
-	defer wa.Disconnect()
 
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		<-sigs
 		cancel()
-		wa.Disconnect()
+		app.Close()
 		os.Exit(0)
 	}()
-
-	out.Emit("ready", wa.Status())
-	if err := wa.Connect(ctx); err != nil {
-		out.Emit("error", map[string]string{"error": err.Error()})
-	}
 
 	// Each request runs on its own goroutine so a slow send or download
 	// never blocks the next list call. The store is a single SQLite handle
@@ -73,7 +87,7 @@ func main() {
 		inflight.Add(1)
 		go func() {
 			defer inflight.Done()
-			result, err := dispatch(ctx, wa, req)
+			result, err := dispatch(ctx, app, req)
 			if err != nil {
 				out.Fail(req.ID, err)
 				return
@@ -85,14 +99,27 @@ func main() {
 	inflight.Wait()
 }
 
-func dispatch(ctx context.Context, wa *WA, req Request) (interface{}, error) {
+func dispatch(ctx context.Context, app *App, req Request) (interface{}, error) {
 	switch req.Method {
 	case "status":
-		return wa.Status(), nil
+		return app.Status(), nil
+	case "unlock":
+		if err := app.Unlock(ctx); err != nil {
+			return nil, err
+		}
+		app.out.Emit("unlocked", app.Status())
+		return app.Status(), nil
+	case "logout":
+		return nil, app.Logout(ctx)
+	}
+
+	wa, err := app.current()
+	if err != nil {
+		return nil, err
+	}
+	switch req.Method {
 	case "pair.start":
 		return nil, wa.Pair(ctx)
-	case "logout":
-		return nil, wa.Logout(ctx)
 	case "chats.list":
 		return wa.store.ListChats()
 	case "messages.list":

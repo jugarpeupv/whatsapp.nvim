@@ -28,10 +28,12 @@ import (
 // WA owns the whatsmeow client and translates its events into editor events.
 type WA struct {
 	cli           *whatsmeow.Client
+	container     *sqlstore.Container
 	store         *Store
 	out           *Writer
 	dir           string
 	log           waLog.Logger
+	closed        bool
 	pairing       sync.Mutex
 	names         sync.Map // jid string -> display name, avoids repeated contact lookups
 	syncDone      bool
@@ -41,7 +43,7 @@ type WA struct {
 	appStateStage map[appstate.WAPatchName]int // how far recovery has gone, see resyncAppState
 }
 
-func NewWA(ctx context.Context, dir string, out *Writer) (*WA, error) {
+func NewWA(ctx context.Context, dir string, out *Writer, key []byte) (*WA, error) {
 	// The store holds the device keys and full message history; keep it
 	// private even if a plugin manager or shell created the directory first.
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -51,27 +53,30 @@ func NewWA(ctx context.Context, dir string, out *Writer) (*WA, error) {
 		return nil, err
 	}
 	log := stderrLogger{module: "wa"}
-	container, err := sqlstore.New(ctx, "sqlite3", "file:"+filepath.Join(dir, "session.db")+"?_foreign_keys=on", log.Sub("db"))
+	sessionPath := filepath.Join(dir, "session.db")
+	container, err := sqlstore.New(ctx, "sqlite3", sqliteDSN(sessionPath, key, "_foreign_keys=on"), log.Sub("db"))
 	if err != nil {
 		return nil, fmt.Errorf("open session store: %w", err)
 	}
-	restrictFile(filepath.Join(dir, "session.db"))
+	restrictFile(sessionPath)
 	device, err := container.GetFirstDevice(ctx)
 	if err != nil {
+		_ = container.Close()
 		if !errors.Is(err, sql.ErrNoRows) {
 			return nil, fmt.Errorf("get device: %w", err)
 		}
 		device = container.NewDevice()
 	}
-	st, err := OpenStore(filepath.Join(dir, "messages.db"))
+	st, err := OpenStore(filepath.Join(dir, "messages.db"), key)
 	if err != nil {
+		_ = container.Close()
 		return nil, fmt.Errorf("open message store: %w", err)
 	}
 	if err := st.CapUnreadAtOwnReply(); err != nil {
 		log.Warnf("cap unread counts: %v", err)
 	}
-	w := &WA{cli: whatsmeow.NewClient(device, log.Sub("client")), store: st, out: out, dir: dir, log: log,
-		downloads: make(chan struct{}, 2)}
+	w := &WA{cli: whatsmeow.NewClient(device, log.Sub("client")), container: container,
+		store: st, out: out, dir: dir, log: log, downloads: make(chan struct{}, 2)}
 	w.cli.AddEventHandler(w.handleEvent)
 	return w, nil
 }
@@ -151,8 +156,17 @@ func (w *WA) Pair(ctx context.Context) error {
 }
 
 func (w *WA) Disconnect() {
+	if w == nil || w.closed {
+		return
+	}
+	w.closed = true
 	w.cli.Disconnect()
-	_ = w.store.Close()
+	if w.container != nil {
+		_ = w.container.Close()
+	}
+	if w.store != nil {
+		_ = w.store.Close()
+	}
 }
 
 // Logout unlinks this device on the phone and wipes the local session and

@@ -14,6 +14,14 @@ require("whatsapp").setup({
   mark_read_on_view = true,                      -- send read receipts when you open a chat
   default_reaction = "👍",
   layout = "bubbles",                            -- or "lines", L toggles
+  encryption = "none",                           -- "none" or "gpg"
+  gpg = {
+    key = "",                                    -- fingerprint; falls back to WHATSAPP_GPG_FINGERPRINT
+    program = nil,                               -- default: gpg in PATH
+    key_file = nil,                              -- default: <store>/session.key.gpg
+    home = nil,                                  -- optional GNUPGHOME
+  },
+  lock_on_resume = true,                         -- lock after a long wall-clock jump (system suspend)
   images = {
     mode = "auto",                               -- "auto", "tag" or "kitty"
     max_width = 60,                              -- cells
@@ -22,6 +30,14 @@ require("whatsapp").setup({
   },
 })
 ```
+
+## Encryption
+
+`encryption = "gpg"` wraps a random SQLCipher key with your GPG key. Set `gpg.key` to the fingerprint, or leave it empty and export `WHATSAPP_GPG_FINGERPRINT`; the config value wins. `gpg.program`, `gpg.key_file` and `gpg.home` are only needed for non-default installations. The fingerprint is public; the passphrase is entered through gpg-agent's pinentry (for example `pinentry-mac`) and Neovim never sees it.
+
+The store must be fresh: enabling encryption on an existing plaintext store is refused. Run `:WhatsApp logout`, set the option, then `:WhatsApp pair` again.
+
+`:WhatsApp lock` stops the bridge and drops the key; `:WhatsApp unlock` asks GPG for it again. The bridge also locks when Neovim exits and, with `lock_on_resume`, after a system suspend/wake detected by a wall-clock jump. There is deliberately no auto-lock on focus or idle. While locked there is no WhatsApp connection, so incoming messages wait on the server.
 
 ## Images
 

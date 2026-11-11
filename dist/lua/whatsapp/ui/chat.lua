@@ -221,7 +221,19 @@ local function splash(width, height)
   local function key(k, text)
     rows[#rows + 1] = { key = k, text = text }
   end
-  if not client.running() then
+  if S.fatal then
+    note(S.fatal)
+    key(":WhatsApp", "tries again")
+  elseif S.unlocking then
+    note("unlocking the encrypted store…")
+    key("GPG", "enter the passphrase in pinentry")
+  elseif S.locked then
+    local msg = S.unlock_error and ("locked: " .. require("whatsapp.text").single_line(S.unlock_error)) or "store locked"
+    note(msg)
+    key(":WhatsApp unlock", "decrypt with your GPG key")
+    rows[#rows + 1] = {}
+    note("session.db stays encrypted on disk while locked")
+  elseif not client.running() then
     note(S.fatal or "bridge not running")
     key(":WhatsApp", S.fatal and "tries again" or "restarts it")
   elseif S.qr then

@@ -3,8 +3,8 @@ module github.com/dwmkerr/whatsapp.nvim/bridge
 go 1.26.9
 
 require (
-	github.com/mattn/go-sqlite3 v1.14.52
 	github.com/mdp/qrterminal/v3 v3.2.1
+	github.com/meow-io/go-sqlcipher v1.2.0
 	go.mau.fi/whatsmeow v0.0.0-20261013142727-4cf8bc8e0aeb
 	google.golang.org/protobuf v1.36.12
 )

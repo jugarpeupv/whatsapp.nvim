@@ -2,11 +2,12 @@ package main
 
 import (
 	"database/sql"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"time"
 
-	_ "github.com/mattn/go-sqlite3"
+	_ "github.com/meow-io/go-sqlcipher"
 )
 
 // Chat is one row of the chat list as the editor sees it.
@@ -67,8 +68,9 @@ CREATE TABLE IF NOT EXISTS messages (
 CREATE INDEX IF NOT EXISTS messages_chat_ts ON messages(chat_jid, ts);
 `
 
-func OpenStore(path string) (*Store, error) {
-	db, err := sql.Open("sqlite3", "file:"+path+"?_journal_mode=WAL&_busy_timeout=5000")
+func OpenStore(path string, key []byte) (*Store, error) {
+	db, err := sql.Open("sqlite3", sqliteDSN(path, key,
+		"_journal_mode=WAL", "_busy_timeout=5000", "_temp_store=MEMORY"))
 	if err != nil {
 		return nil, err
 	}
@@ -313,10 +315,28 @@ func boolInt(b bool) int {
 	return 0
 }
 
+// sqliteDSN returns a SQLCipher DSN. The key is a raw 32-byte key encoded as
+// hex, so SQLCipher skips its own passphrase KDF: the key source (here GPG)
+// decides how the key is protected, and a random key has nothing to stretch.
+func sqliteDSN(path string, key []byte, pragmas ...string) string {
+	dsn := "file:" + path
+	sep := "?"
+	if len(key) > 0 {
+		dsn += sep + "_pragma_key=x'" + hex.EncodeToString(key) + "'" +
+			"&_pragma_cipher_page_size=4096"
+		sep = "&"
+	}
+	for _, p := range pragmas {
+		dsn += sep + p
+		sep = "&"
+	}
+	return dsn
+}
+
 // restrictFile makes a database and its WAL/SHM side files owner-only.
 // SQLite creates them with the process umask, which is usually 022.
 func restrictFile(path string) {
-	for _, p := range []string{path, path + "-wal", path + "-shm"} {
+	for _, p := range []string{path, path + "-wal", path + "-shm", path + "-journal"} {
 		_ = os.Chmod(p, 0o600)
 	}
 }
