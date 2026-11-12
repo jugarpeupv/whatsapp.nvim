@@ -81,7 +81,11 @@ return function()
   -- User configs toggle number options on insert, defined before the plugin
   -- builds its layout as a vimrc would be; the panes must reset them.
   vim.api.nvim_create_autocmd("InsertEnter", { callback = function() vim.cmd("set number norelativenumber") end })
+  vim.go.number = true
+  vim.go.relativenumber = true
   vim.wo.wrap = true
+  vim.wo.number = true
+  vim.wo.relativenumber = true
   wa.open()
   client.on = on
   check(wait_for(function() return #S.chats == 2 end), "chats loaded from bridge")
@@ -92,8 +96,14 @@ return function()
   vim.cmd("enew")
   check(vim.wo.wrap == true, "wrap is restored when a user buffer replaces the list")
   check(vim.wo.winbar == "", "winbar is restored when a user buffer replaces the list")
+  check(vim.wo.number == true and vim.wo.relativenumber == true,
+    "number and relativenumber are restored after leaving the list")
   vim.cmd("buffer whatsapp://chats")
   check(vim.wo.wrap == false, "the list options apply again on re-entry")
+  vim.cmd("enew")
+  check(vim.wo.number == true and vim.wo.relativenumber == true,
+    "number and relativenumber survive a second list visit")
+  vim.cmd("buffer whatsapp://chats")
   check(not S.win_valid("compose"), "compose hidden until a chat opens")
   local splash = table.concat(vim.api.nvim_buf_get_lines(S.bufs.chat, 0, -1, false), "\n")
   check(splash:find("Whatsapp", 1, true) ~= nil and splash:find("next unread", 1, true) ~= nil, "splash shows keys")
@@ -145,13 +155,24 @@ return function()
   check(S.current == "111@s.whatsapp.net", "u opens the unread chat")
   wa.show_list()
 
+  local wins_before = #vim.api.nvim_tabpage_list_wins(0)
+  wa.open_chat_split("111@s.whatsapp.net", true)
+  check(#vim.api.nvim_tabpage_list_wins(0) == wins_before + 1 and S.split_win,
+    "<C-v> opens the conversation in an extra vertical split")
+  check(vim.api.nvim_buf_get_name(vim.api.nvim_get_current_buf()) == "whatsapp://alice",
+    "the split holds the conversation buffer")
+  wa.close_chat("111@s.whatsapp.net")
+  check(not S.split_win and vim.api.nvim_buf_get_name(vim.api.nvim_get_current_buf()) == "whatsapp://chats",
+    "q from the split returns to the list")
+
   wa.open_chat("111@s.whatsapp.net")
   check(wait_for(function() return S.messages["111@s.whatsapp.net"] ~= nil end), "messages loaded")
   local alice_buf = S.bufs.chat
   local alice_name = vim.api.nvim_buf_get_name(alice_buf)
   check(vim.bo[alice_buf].buflisted and alice_name == "whatsapp://alice",
     "conversation is a listed whatsapp://alice buffer")
-  check(vim.api.nvim_win_get_cursor(S.wins.chat)[1] == vim.api.nvim_buf_line_count(S.bufs.chat), "opened chat starts at the bottom")
+  check(vim.api.nvim_win_get_cursor(S.wins.chat)[1] == vim.api.nvim_buf_line_count(S.bufs.chat),
+    "opened chat starts at the last message")
 
   -- A listed conversation can be reached directly with :b, without going
   -- through the chat list.
@@ -188,6 +209,15 @@ return function()
   check(rendered:find("%{system", 1, true) ~= nil, "winbar shows remote name literally")
   check(rendered:find("+111", 1, true) ~= nil, "winbar shows phone number for direct chats")
   S.chat_by_jid["111@s.whatsapp.net"].name = "Alice"
+
+  -- Splitting a Whatsapp window copies its winbar option. The expression must
+  -- render empty when the new window shows an ordinary buffer.
+  vim.cmd("split")
+  vim.cmd("enew")
+  local split_bar = vim.api.nvim_eval_statusline(vim.wo.winbar,
+    { winid = vim.api.nvim_get_current_win(), maxwidth = 1000 }).str
+  check(split_bar == "", "a split does not inherit the Whatsapp winbar into a file buffer")
+  vim.cmd("close")
 
   -- The fake pushes a live message after the first messages.list.
   check(wait_for(function()
@@ -361,7 +391,9 @@ return function()
     check(wait_for(function()
       return table.concat(vim.api.nvim_buf_get_lines(S.bufs.chat, 0, -1, false), "\n"):find(placeholder, 1, true) ~= nil
     end, 5000), "view fills the pane with the placeholder grid")
-    check(vim.wo[S.wins.chat].winbar:find("q closes", 1, true) ~= nil, "view names its exit in the title")
+    local view_bar = vim.api.nvim_eval_statusline(vim.wo[S.wins.chat].winbar,
+      { winid = S.wins.chat, maxwidth = 1000 }).str
+    check(view_bar:find("q closes", 1, true) ~= nil, "view names its exit in the title")
     check(#image_marks() == 0, "no inline picture while viewing")
     vim.api.nvim_feedkeys("q", "x", false)
     check(S.view == nil and table.concat(vim.api.nvim_buf_get_lines(S.bufs.chat, 0, -1, false), "\n"):find("hello", 1, true) ~= nil, "q restores the conversation")

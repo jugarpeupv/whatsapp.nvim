@@ -461,6 +461,8 @@ function M.render(opts)
     end
   end
 
+
+
   -- Follow the bottom unless the user scrolled up in this same chat; a
   -- newly opened chat always starts at its latest message.
   local follow = true
@@ -502,7 +504,7 @@ function M.render(opts)
     local name = (S.help and is_current) and "Whatsapp keys"
       or ((S.view and is_current) and ((S.view.filename ~= "" and S.view.filename or "image") .. " · q closes"))
       or (jid and S.chat_title(jid) or "Whatsapp")
-    vim.wo[S.wins.chat].winbar = " " .. S.bar_text(name)
+    require("whatsapp").set_winbar(S.wins.chat, " " .. S.bar_text(name))
     -- The chat window is often not the current one (the list or compose
     -- pane has focus), and Neovim leaves a non-current window's topline
     -- alone when its buffer changes. Scroll explicitly inside the window so

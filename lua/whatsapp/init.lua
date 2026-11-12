@@ -154,7 +154,36 @@ local resume_timer = nil
 local focus_timer = nil
 local help_back_list = false
 local loading = {} -- jid -> true while a messages.list request is in flight
+local winbar_text = {} -- window id -> text to show while it holds a Whatsapp buffer
 local apply_win_opts
+
+local WINBAR_EXPR = "%{v:lua.require'whatsapp'.render_winbar()}"
+
+-- winbar is window-local, and Neovim copies it when splitting a window. Use
+-- an expression instead of a literal so an inherited winbar renders empty as
+-- soon as that window shows a normal buffer.
+function M.set_winbar(win, text)
+  if not vim.api.nvim_win_is_valid(win) then
+    return
+  end
+  winbar_text[win] = text or ""
+  if vim.wo[win].winbar ~= WINBAR_EXPR then
+    vim.wo[win].winbar = WINBAR_EXPR
+  end
+end
+
+function M.render_winbar()
+  local win = tonumber(vim.g.statusline_winid) or vim.api.nvim_get_current_win()
+  if not win or win == 0 or not vim.api.nvim_win_is_valid(win) then
+    return ""
+  end
+  local buf = vim.api.nvim_win_get_buf(win)
+  local ft = vim.bo[buf].filetype
+  if ft ~= "whatsapp" and ft ~= "whatsapp-chats" and ft ~= "whatsapp-compose" then
+    return ""
+  end
+  return winbar_text[win] or ""
+end
 
 local function clear_chat_buffers()
   for _, buf in pairs(S.chat_bufs) do
@@ -624,6 +653,43 @@ function M.open_chat(jid)
   M.enter_chat(jid, buf, true)
 end
 
+-- <C-v>/<C-s> in the list: open the conversation buffer in a new split,
+-- keeping the list where it is. Reuse an existing extra split.
+function M.open_chat_split(jid, vertical)
+  if not jid then
+    return
+  end
+  if locked() then
+    notify("store is locked, run :Whatsapp unlock", vim.log.levels.WARN)
+    return
+  end
+  if not S.layout_valid() then
+    M.open()
+  end
+  if not S.layout_valid() then
+    return
+  end
+  local buf = chat.ensure_buf(jid)
+  if not buf then
+    return
+  end
+  local win = S.split_win
+  if not (win and vim.api.nvim_win_is_valid(win)) then
+    if vertical then
+      vim.cmd("botright vsplit")
+    else
+      vim.cmd("botright split")
+    end
+    win = vim.api.nvim_get_current_win()
+    S.split_win = win
+  else
+    vim.api.nvim_set_current_win(win)
+  end
+  vim.api.nvim_win_set_buf(win, buf)
+  vim.api.nvim_set_current_win(win)
+  M.enter_chat(jid, buf, true)
+end
+
 function M.load_older()
   local jid = S.current
   local msgs = jid and S.messages[jid]
@@ -939,36 +1005,12 @@ local WIN_OPTS = {
   compose = vim.tbl_extend("force", common, { winfixheight = true }),
 }
 
--- Window options are not buffer-local. Remember what the window had before a
--- Whatsapp buffer used it, and put it back when the window shows something
--- else; otherwise wrap/signcolumn/winfixwidth/winbar leak into user buffers.
-local saved_win_opts = {}
-
-local function save_win_opts(win)
-  if saved_win_opts[win] then
-    return
-  end
-  local opts = { winbar = vim.wo[win].winbar }
-  for _, spec in pairs(WIN_OPTS) do
-    for k in pairs(spec) do
-      opts[k] = vim.wo[win][k]
-    end
-  end
-  saved_win_opts[win] = opts
-end
-
-local function restore_win_opts(win)
-  local opts = saved_win_opts[win]
-  if not opts then
-    return
-  end
-  if vim.api.nvim_win_is_valid(win) then
-    for k, v in pairs(opts) do
-      vim.wo[win][k] = v
-    end
-  end
-  saved_win_opts[win] = nil
-end
+-- Neovim keeps window-option values per buffer, so setting wrap/number on a
+-- Whatsapp buffer does not leak when an existing user buffer returns to that
+-- window. A brand-new buffer does inherit the current window values, though;
+-- remember new buffers and reset those inherited options on entry.
+local new_buffers = {}
+local base_win_opts = {}
 
 local function pane_for_buf(buf)
   local ft = vim.bo[buf].filetype
@@ -981,18 +1023,41 @@ local function pane_for_buf(buf)
   end
 end
 
+local function capture_base_opts(win)
+  base_win_opts = {}
+  for _, spec in pairs(WIN_OPTS) do
+    for k in pairs(spec) do
+      local ok, value = pcall(function()
+        return vim.wo[win][k]
+      end)
+      if ok then
+        base_win_opts[k] = value
+      end
+    end
+  end
+  base_win_opts.winbar = vim.wo[win].winbar
+end
+
+local function reset_inherited_opts(win)
+  for k, value in pairs(base_win_opts) do
+    vim.wo[win][k] = value
+  end
+end
+
 -- Apply the right pane options to whatever window shows a Whatsapp buffer,
--- including buffers opened directly with :buffer. Non-Whatsapp buffers get
--- the window's original options back.
+-- including buffers opened directly with :buffer. New non-Whatsapp buffers
+-- get global defaults instead of inheriting the previous pane's options.
 local function apply_buffer_opts(win, buf)
   local name = pane_for_buf(buf)
-  if not name then
-    restore_win_opts(win)
+  if name then
+    for k, v in pairs(WIN_OPTS[name]) do
+      vim.wo[win][k] = v
+    end
     return
   end
-  save_win_opts(win)
-  for k, v in pairs(WIN_OPTS[name]) do
-    vim.wo[win][k] = v
+  if new_buffers[buf] then
+    new_buffers[buf] = nil
+    reset_inherited_opts(win)
   end
 end
 
@@ -1000,7 +1065,6 @@ apply_win_opts = function(name)
   if not S.win_showing(name) then
     return
   end
-  save_win_opts(S.wins[name])
   for k, v in pairs(WIN_OPTS[name]) do
     vim.wo[S.wins[name]][k] = v
   end
@@ -1083,6 +1147,16 @@ function M.show_list()
   end
   local buf = list.ensure_buf()
   S.bufs.list = buf
+  if S.split_win and vim.api.nvim_win_is_valid(S.split_win)
+    and S.wins.list and S.wins.list ~= S.split_win then
+    -- An extra conversation split exists: show the list in its own window
+    -- and leave the split alone.
+    vim.api.nvim_win_set_buf(S.wins.list, buf)
+    apply_win_opts("list")
+    vim.api.nvim_set_current_win(S.wins.list)
+    list.render()
+    return
+  end
   S.bufs.chat = chat.splash_buf()
   if S.single then
     S.wins.list = S.wins.chat
@@ -1109,6 +1183,21 @@ function M.close_chat(jid)
     return
   end
   local win = vim.api.nvim_get_current_win()
+  if S.split_win == win then
+    pcall(vim.api.nvim_win_close, win, true)
+    S.split_win = nil
+    S.wins.chat = S.pane_chat_win
+    if not (S.wins.chat and vim.api.nvim_win_is_valid(S.wins.chat)) then
+      S.wins.chat = S.wins.list
+    end
+    S.current = nil
+    if S.wins.chat and vim.api.nvim_win_is_valid(S.wins.chat) then
+      S.bufs.chat = chat.splash_buf()
+      vim.api.nvim_win_set_buf(S.wins.chat, S.bufs.chat)
+    end
+    M.show_list()
+    return
+  end
   if S.layout_valid() and S.wins.chat == win then
     M.show_list()
     return
@@ -1159,7 +1248,7 @@ local function layout_autocmds(mode)
   vim.api.nvim_create_autocmd("WinClosed", {
     group = group,
     callback = function(ev)
-      saved_win_opts[tonumber(ev.match)] = nil
+      winbar_text[tonumber(ev.match)] = nil
     end,
   })
   if mode == "tab" then
@@ -1175,6 +1264,7 @@ local function layout_autocmds(mode)
 end
 
 local function build_layout(mode)
+  capture_base_opts(vim.api.nvim_get_current_win())
   remember_previous()
   S.mode = mode
   S.single = mode ~= "tab"
@@ -1185,6 +1275,7 @@ local function build_layout(mode)
     vim.cmd("tabnew")
     S.tab = vim.api.nvim_get_current_tabpage()
     S.wins.chat = vim.api.nvim_get_current_win()
+    S.pane_chat_win = S.wins.chat
     S.wins.list = nil
     S.bufs.chat = chat.splash_buf()
     vim.api.nvim_win_set_buf(S.wins.chat, S.bufs.chat)
@@ -1202,6 +1293,7 @@ local function build_layout(mode)
       vim.cmd("botright " .. S.opts.list_height .. "split")
     end
     S.wins.chat = vim.api.nvim_get_current_win()
+    S.pane_chat_win = S.wins.chat
     S.wins.list = S.wins.chat
     vim.api.nvim_win_set_buf(S.wins.chat, list.ensure_buf())
     S.bufs.list = list.ensure_buf()
@@ -1282,6 +1374,11 @@ function M.close()
   require("whatsapp.ui.images").reset()
   stop_typing()
   set_presence(false)
+  if S.split_win and vim.api.nvim_win_is_valid(S.split_win) then
+    pcall(vim.api.nvim_win_close, S.split_win, true)
+    S.split_win = nil
+    S.wins.chat = S.pane_chat_win or S.wins.list
+  end
   local prev = S.previous
   if S.layout_valid() then
     if S.mode == "tab" then
@@ -1289,7 +1386,6 @@ function M.close()
       pcall(vim.cmd, "tabclose")
     elseif S.wins.chat and vim.api.nvim_win_is_valid(S.wins.chat) then
       if S.mode == "current" then
-        restore_win_opts(S.wins.chat)
         if prev and prev.buf and vim.api.nvim_buf_is_valid(prev.buf) then
           pcall(vim.api.nvim_win_set_buf, S.wins.chat, prev.buf)
         end
@@ -1329,6 +1425,11 @@ function M.lock()
   S.messages = {}
   S.chats = {}
   S.chat_by_jid = {}
+  if S.split_win and vim.api.nvim_win_is_valid(S.split_win) then
+    pcall(vim.api.nvim_win_close, S.split_win, true)
+    S.split_win = nil
+    S.wins.chat = S.pane_chat_win or S.wins.list
+  end
   clear_chat_buffers()
   S.qr = nil
   S.pairing = false
@@ -1480,6 +1581,19 @@ function M.open_by_name(name)
 end
 
 function M.setup(opts)
+  if not next(base_win_opts) then
+    for _, spec in pairs(WIN_OPTS) do
+      for k in pairs(spec) do
+        local ok, value = pcall(function()
+          return vim.wo[0][k]
+        end)
+        if ok then
+          base_win_opts[k] = value
+        end
+      end
+    end
+    base_win_opts.winbar = vim.wo[0].winbar
+  end
   S.opts = vim.tbl_deep_extend("force", defaults, opts or {})
   S.opts.bin = S.opts.bin or (plugin_root() .. "/bin/wa-bridge")
   if type(S.opts.gpg) ~= "table" then
@@ -1498,6 +1612,13 @@ function M.setup(opts)
   -- Exiting Neovim ends the bridge; SQLCipher has already written ciphertext,
   -- so there is nothing to encrypt on the way out.
   vim.api.nvim_create_autocmd("VimLeavePre", { callback = client.stop })
+  -- New buffers inherit the current window's local options. Mark them so the
+  -- BufEnter handler can put global defaults back if they are not ours.
+  vim.api.nvim_create_autocmd("BufNew", {
+    callback = function(ev)
+      new_buffers[ev.buf] = true
+    end,
+  })
 
   -- Neovim cannot see the OS suspend event. A timer that wakes with a large
   -- wall-clock gap is the portable signal: sleep/resume leaves a jump the

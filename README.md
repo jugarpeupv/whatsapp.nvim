@@ -107,6 +107,7 @@ Chat list:
 | Key | What |
 |---|---|
 | `<CR>` `l` | Open the chat under the cursor |
+| `<C-v>` `<C-s>` | Open the chat in a vertical / horizontal split |
 | `u` | Open the next unread chat |
 | `f` | Cycle the filter: all / unread / groups |
 | `gU` `gu` `~` | Mark unread / read / toggle, mirrored to your phone |

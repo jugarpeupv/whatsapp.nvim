@@ -12,6 +12,8 @@ local M = {
   mode = nil,        -- "current", "vertical", "horizontal" or "tab"
   single = false,    -- one pane shows list or conversation; no separate chat window
   previous = nil,    -- window/buffer/tab to restore when closing a single pane
+  pane_chat_win = nil, -- the layout's own chat window
+  split_win = nil,   -- an extra conversation split opened from the list
   wins = { list = nil, chat = nil, compose = nil },
   bufs = { list = nil, chat = nil, compose = nil },
   chat_bufs = {},    -- jid -> listed conversation buffer
@@ -133,6 +135,8 @@ function M.reset_layout()
   M.mode = nil
   M.single = false
   M.previous = nil
+  M.pane_chat_win = nil
+  M.split_win = nil
   M.wins = { list = nil, chat = nil, compose = nil }
   -- Hidden buffers and per-chat drafts survive closing the pane.
 end

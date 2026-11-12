@@ -44,7 +44,7 @@ The store must be fresh: enabling encryption on an existing plaintext store is r
 
 ## Opening
 
-`:Whatsapp` puts the chat list in the current window. `:Whatsapp open vertical` uses a right-hand vertical split, `:Whatsapp open horizontal` a split below, and `:Whatsapp open tab` a new tab with the list and conversation side by side. No conversation is opened until you press `<CR>` on a chat. `S` in a conversation opens the compose buffer below it; `:w` sends and closes it.
+`:Whatsapp` puts the chat list in the current window. `:Whatsapp open vertical` uses a right-hand vertical split, `:Whatsapp open horizontal` a split below, and `:Whatsapp open tab` a new tab with the list and conversation side by side. No conversation is opened until you press `<CR>` on a chat. In the list, `<C-v>` and `<C-s>` open the selected conversation in an extra vertical or horizontal split, leaving the list where it is. `S` in a conversation opens the compose buffer below it; `:w` sends and closes it.
 
 The list is the listed buffer `whatsapp://chats`. Every conversation is also a listed buffer: a contact becomes `<slugified-name>`, a group `group-<slugified-name>`. Use `:buffer whatsapp://paqui-garcia` to open one directly; the plugin updates the active conversation when the buffer is entered. A short hash is appended only if two names would collide.
 

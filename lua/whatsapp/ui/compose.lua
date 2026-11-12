@@ -80,7 +80,7 @@ function M.update_winbar()
     end
     bar = bar .. "  ·  ↳ " .. S.bar_text(who) .. ": " .. S.bar_text(snippet) .. "  ·  q cancel"
   end
-  vim.wo[S.wins.compose].winbar = bar .. "  ·  :w send  ·  g? help"
+  require("whatsapp").set_winbar(S.wins.compose, bar .. "  ·  :w send  ·  g? help")
 end
 
 return M

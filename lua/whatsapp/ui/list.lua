@@ -76,6 +76,8 @@ function M.ensure_buf()
       wa.open_chat(M.jid_under_cursor())
     end
   end, "Open chat, or cycle the filter")
+  map("<C-v>", function() wa.open_chat_split(M.jid_under_cursor(), true) end, "Open chat in a vertical split")
+  map("<C-s>", function() wa.open_chat_split(M.jid_under_cursor(), false) end, "Open chat in a horizontal split")
   map("f", M.cycle_filter, "Filter: all / unread / groups")
   map("l", function() wa.open_chat(M.jid_under_cursor()) end, "Open chat")
   map("u", M.next_unread, "Next unread chat")
@@ -144,7 +146,7 @@ function M.render()
     if n > 0 then
       bar = bar .. " · " .. n .. " unread"
     end
-    vim.wo[S.wins.list].winbar = bar .. " · g? help"
+    require("whatsapp").set_winbar(S.wins.list, bar .. " · g? help")
   end
   line_jids = jids
   local keep = M.jid_under_cursor() or S.current

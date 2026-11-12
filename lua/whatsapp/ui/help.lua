@@ -18,6 +18,7 @@ local commands = {
 local keys = {
   list = {
     { "<CR> l", "open chat" },
+    { "<C-v> <C-s>", "open chat in a vertical / horizontal split" },
     { "u", "next unread chat" },
     { "f", "filter: all / unread / groups" },
     { "gU gu ~", "mark unread / read / toggle" },
