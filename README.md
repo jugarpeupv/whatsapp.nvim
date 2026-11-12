@@ -189,7 +189,8 @@ require("whatsapp").setup({
   images = { mode = "auto" },
   encryption = "none",      -- "none" or "gpg"
   gpg = {
-    key = "",               -- fingerprint; falls back to WHATSAPP_GPG_FINGERPRINT
+    key = "",               -- falls back to WHATSAPP_GPG_FINGERPRINT
+    home = nil,             -- falls back to WHATSAPP_GPG_HOME
   },
   lock_on_resume = true,
 })
@@ -217,10 +218,70 @@ The fingerprint can come from the environment instead of the config:
 
 ```sh
 export WHATSAPP_GPG_FINGERPRINT=YOUR_GPG_FINGERPRINT
+export WHATSAPP_GPG_HOME="$HOME/.local/share/whatsapp-gnupg"
 ```
 
-`gpg.key` wins when both are set. The fingerprint is public; the passphrase
-still goes only to gpg-agent/pinentry.
+`gpg.key` and `gpg.home` win when both are set. The fingerprint is public; the
+passphrase still goes only to gpg-agent/pinentry.
+
+### Recommended: a dedicated GPG key and agent
+
+Using your everyday GPG key works, but its gpg-agent cache is shared with git,
+mail and everything else, and it may keep the passphrase warm. A dedicated key
+in its own `GNUPGHOME` lets Whatsapp ask every time without making every commit
+prompt.
+
+Run this once:
+
+```sh
+WAGH="$HOME/.local/share/whatsapp-gnupg"
+mkdir -p -m 700 "$WAGH"
+
+cat > "$WAGH/gpg-agent.conf" <<'EOF'
+default-cache-ttl 0
+max-cache-ttl 0
+no-allow-external-cache
+pinentry-program /opt/homebrew/bin/pinentry-mac
+EOF
+chmod 600 "$WAGH/gpg-agent.conf"
+
+GNUPGHOME="$WAGH" gpg --quick-gen-key \
+  "Whatsapp nvim <whatsapp@localhost>" default default never
+
+FPR=$(GNUPGHOME="$WAGH" gpg --with-colons --list-keys |
+  awk -F: '/^fpr/ { print $10; exit }')
+
+export WHATSAPP_GPG_HOME="$WAGH"
+export WHATSAPP_GPG_FINGERPRINT="$FPR"
+```
+
+Adjust `pinentry-program` if you do not use the Homebrew pinentry-mac. Then
+configure the plugin without hardcoding either value:
+
+```lua
+require("whatsapp").setup({
+  encryption = "gpg",
+  gpg = {}, -- WHATSAPP_GPG_HOME and WHATSAPP_GPG_FINGERPRINT
+})
+```
+
+Export the two variables from your shell profile, or put them in `gpg.home`
+and `gpg.key` if Neovim is launched from a GUI that does not inherit your
+shell. Restart Neovim after changing them; a running editor does not pick up a
+new environment.
+
+Test the agent before using it:
+
+```sh
+printf test |
+  GNUPGHOME="$WAGH" gpg --encrypt --recipient "$FPR" |
+  GNUPGHOME="$WAGH" gpg --decrypt
+```
+
+If the store already exists, `session.key.gpg` is encrypted to the old key:
+log out and pair again, or rewrap that file to the new fingerprint. Back up the
+dedicated secret key somewhere safe; losing it means re-pairing, and losing it
+with the old key also means losing the local history.
 
 Enabling encryption on an existing plaintext store is deliberately not
 automatic. Run `:Whatsapp logout`, enable the option, and pair again. The first

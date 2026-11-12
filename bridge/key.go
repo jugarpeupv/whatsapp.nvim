@@ -19,7 +19,10 @@ const (
 	storeMissing
 )
 
-const gpgFingerprintEnv = "WHATSAPP_GPG_FINGERPRINT"
+const (
+	gpgFingerprintEnv = "WHATSAPP_GPG_FINGERPRINT"
+	gpgHomeEnv        = "WHATSAPP_GPG_HOME"
+)
 
 // resolveGPGKey prefers the explicit config/flag value and falls back to the
 // environment. The fingerprint is public; the passphrase never lives here.
@@ -28,6 +31,26 @@ func resolveGPGKey(explicit string) string {
 		return key
 	}
 	return strings.TrimSpace(os.Getenv(gpgFingerprintEnv))
+}
+
+// resolveGPGHome does the same for the dedicated GNUPGHOME. Shells usually
+// expand ~ before exporting, but accept it here too for config values.
+func resolveGPGHome(explicit string) string {
+	home := strings.TrimSpace(explicit)
+	if home == "" {
+		home = strings.TrimSpace(os.Getenv(gpgHomeEnv))
+	}
+	if home == "~" {
+		if dir, err := os.UserHomeDir(); err == nil {
+			return dir
+		}
+	}
+	if strings.HasPrefix(home, "~/") {
+		if dir, err := os.UserHomeDir(); err == nil {
+			return filepath.Join(dir, home[2:])
+		}
+	}
+	return home
 }
 
 var sqliteHeader = []byte("SQLite format 3\x00")
@@ -82,6 +105,7 @@ func keyPath(cfg EncryptionConfig, dir string) string {
 // out and pair again, which also gives them a clean device on the phone.
 func storeKey(ctx context.Context, cfg EncryptionConfig, dir string) ([]byte, error) {
 	cfg.GPGKey = resolveGPGKey(cfg.GPGKey)
+	cfg.Home = resolveGPGHome(cfg.Home)
 	keyFile := keyPath(cfg, dir)
 	keyExists := fileExists(keyFile)
 	sessionKind, err := storeKind(filepath.Join(dir, "session.db"))

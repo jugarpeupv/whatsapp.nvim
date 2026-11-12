@@ -19,7 +19,7 @@ require("whatsapp").setup({
     key = "",                                    -- fingerprint; falls back to WHATSAPP_GPG_FINGERPRINT
     program = nil,                               -- default: gpg in PATH
     key_file = nil,                              -- default: <store>/session.key.gpg
-    home = nil,                                  -- optional GNUPGHOME
+    home = nil,                                  -- GNUPGHOME; falls back to WHATSAPP_GPG_HOME
   },
   lock_on_resume = true,                         -- lock after a long wall-clock jump (system suspend)
   images = {
@@ -33,7 +33,9 @@ require("whatsapp").setup({
 
 ## Encryption
 
-`encryption = "gpg"` wraps a random SQLCipher key with your GPG key. Set `gpg.key` to the fingerprint, or leave it empty and export `WHATSAPP_GPG_FINGERPRINT`; the config value wins. `gpg.program`, `gpg.key_file` and `gpg.home` are only needed for non-default installations. The fingerprint is public; the passphrase is entered through gpg-agent's pinentry (for example `pinentry-mac`) and Neovim never sees it.
+`encryption = "gpg"` wraps a random SQLCipher key with your GPG key. Set `gpg.key` to the fingerprint, or leave it empty and export `WHATSAPP_GPG_FINGERPRINT`; the config value wins. `gpg.home` selects a dedicated `GNUPGHOME`, or falls back to `WHATSAPP_GPG_HOME`. `gpg.program` and `gpg.key_file` are only needed for non-default installations. The fingerprint is public; the passphrase is entered through gpg-agent's pinentry (for example `pinentry-mac`) and Neovim never sees it.
+
+A dedicated key in its own `GNUPGHOME` is recommended so its agent can have `default-cache-ttl 0` without affecting git or mail; see the main README for the commands.
 
 The store must be fresh: enabling encryption on an existing plaintext store is refused. Run `:Whatsapp logout`, set the option, then `:Whatsapp pair` again.
 

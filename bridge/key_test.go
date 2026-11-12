@@ -24,6 +24,23 @@ func TestResolveGPGKey(t *testing.T) {
 	}
 }
 
+func TestResolveGPGHome(t *testing.T) {
+	t.Setenv(gpgHomeEnv, "  /tmp/wa-gnupg  ")
+	if got := resolveGPGHome(""); got != "/tmp/wa-gnupg" {
+		t.Fatalf("env home: %q", got)
+	}
+	if got := resolveGPGHome(" /tmp/config-home "); got != "/tmp/config-home" {
+		t.Fatalf("config should win: %q", got)
+	}
+	home, err := os.UserHomeDir()
+	if err == nil {
+		t.Setenv(gpgHomeEnv, "")
+		if got := resolveGPGHome("~/wa-gnupg"); got != filepath.Join(home, "wa-gnupg") {
+			t.Fatalf("tilde home: %q", got)
+		}
+	}
+}
+
 func TestSQLCipherStoreRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	key := bytes.Repeat([]byte{7}, 32)

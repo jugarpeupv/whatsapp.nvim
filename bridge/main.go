@@ -25,7 +25,7 @@ func main() {
 	gpgKey := flag.String("gpg-key", "", "GPG fingerprint used to wrap the store key (default: WHATSAPP_GPG_FINGERPRINT)")
 	gpgProgram := flag.String("gpg-program", "", "gpg executable (default: gpg in PATH)")
 	gpgKeyFile := flag.String("gpg-key-file", "", "wrapped store key (default: <store>/session.key.gpg)")
-	gpgHome := flag.String("gpg-home", "", "optional GNUPGHOME for gpg")
+	gpgHome := flag.String("gpg-home", "", "optional GNUPGHOME for gpg (default: WHATSAPP_GPG_HOME)")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
 	// Everything this process creates holds private data (keys, messages, media).
@@ -53,7 +53,7 @@ func main() {
 	defer lock.Close()
 	app := NewApp(ctx, *dir, out, EncryptionConfig{
 		Mode: *encryption, GPGKey: resolveGPGKey(*gpgKey), Program: *gpgProgram,
-		KeyFile: *gpgKeyFile, Home: *gpgHome,
+		KeyFile: *gpgKeyFile, Home: resolveGPGHome(*gpgHome),
 	})
 	defer app.Close()
 

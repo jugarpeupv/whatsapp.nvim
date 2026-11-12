@@ -96,9 +96,14 @@ local function bridge_args()
     table.insert(args, "-gpg-key-file")
     table.insert(args, gpg.key_file)
   end
-  if gpg.home and gpg.home ~= "" then
+  local home = gpg.home
+  if not home or home == "" then
+    home = vim.env.WHATSAPP_GPG_HOME
+  end
+  home = home and vim.fn.expand(vim.trim(tostring(home))) or ""
+  if home ~= "" then
     table.insert(args, "-gpg-home")
-    table.insert(args, gpg.home)
+    table.insert(args, home)
   end
   return args
 end
