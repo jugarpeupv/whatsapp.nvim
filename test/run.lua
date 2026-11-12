@@ -81,6 +81,7 @@ return function()
   -- User configs toggle number options on insert, defined before the plugin
   -- builds its layout as a vimrc would be; the panes must reset them.
   vim.api.nvim_create_autocmd("InsertEnter", { callback = function() vim.cmd("set number norelativenumber") end })
+  vim.wo.wrap = true
   wa.open()
   client.on = on
   check(wait_for(function() return #S.chats == 2 end), "chats loaded from bridge")
@@ -88,6 +89,11 @@ return function()
   check(vim.bo[S.bufs.list].buflisted and vim.api.nvim_buf_get_name(S.bufs.list) == "whatsapp://chats",
     "the chat list is a listed whatsapp://chats buffer")
   check(vim.wo[S.wins.list].wrap == false, "the chat list does not wrap")
+  vim.cmd("enew")
+  check(vim.wo.wrap == true, "wrap is restored when a user buffer replaces the list")
+  check(vim.wo.winbar == "", "winbar is restored when a user buffer replaces the list")
+  vim.cmd("buffer whatsapp://chats")
+  check(vim.wo.wrap == false, "the list options apply again on re-entry")
   check(not S.win_valid("compose"), "compose hidden until a chat opens")
   local splash = table.concat(vim.api.nvim_buf_get_lines(S.bufs.chat, 0, -1, false), "\n")
   check(splash:find("Whatsapp", 1, true) ~= nil and splash:find("next unread", 1, true) ~= nil, "splash shows keys")
@@ -444,6 +450,16 @@ return function()
   vim.notify = real_notify
 
   require("test.security")(check, events)
+
+  -- Focus loss locks a paired, encrypted session after a short grace period.
+  local saved_encryption, saved_focus_lock = S.opts.encryption, S.opts.lock_on_focus_lost
+  S.opts.encryption, S.opts.lock_on_focus_lost = "gpg", true
+  S.status.paired = true
+  vim.api.nvim_exec_autocmds("FocusLost", {})
+  check(wait_for(function() return S.locked and not client.running() end, 2000), "focus loss locks the session")
+  S.opts.encryption, S.opts.lock_on_focus_lost = saved_encryption, saved_focus_lock
+  wa.open()
+  check(wait_for(function() return #S.chats == 2 end), "the list comes back after reopening")
 
   -- Manual lock stops the bridge and hides the conversation. Reopening starts
   -- a fresh bridge; with encryption off the ready event clears the lock.

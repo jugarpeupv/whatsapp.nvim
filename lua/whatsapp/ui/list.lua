@@ -64,14 +64,6 @@ function M.ensure_buf()
   vim.bo[buf].filetype = "whatsapp-chats"
   vim.bo[buf].modifiable = false
   S.bufs.list = buf
-  -- wrap is window-local, so set it whenever the list is shown, including
-  -- when it is opened directly with :buffer whatsapp://chats.
-  vim.api.nvim_create_autocmd({ "BufEnter", "BufWinEnter" }, {
-    buffer = buf,
-    callback = function()
-      vim.wo.wrap = false
-    end,
-  })
 
   local wa = require("whatsapp")
   local map = function(lhs, fn, desc)

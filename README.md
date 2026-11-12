@@ -192,7 +192,8 @@ require("whatsapp").setup({
     key = "",               -- falls back to WHATSAPP_GPG_FINGERPRINT
     home = nil,             -- falls back to WHATSAPP_GPG_HOME
   },
-  lock_on_resume = true,
+  lock_on_resume = true,     -- lock after a system suspend/wake
+  lock_on_focus_lost = false, -- lock when the terminal/app loses focus
 })
 ```
 
@@ -290,9 +291,12 @@ prompt is cancelled, the bridge stays locked and `:Whatsapp unlock` retries
 without restarting the editor.
 
 The session is locked by `:Whatsapp lock`, when Neovim exits, and after a
-system suspend/wake detected by a wall-clock jump (`lock_on_resume`). There is
-no lock on focus changes or idle time. Locking stops the bridge, so messages
-are queued by WhatsApp until you unlock.
+system suspend/wake detected by a wall-clock jump (`lock_on_resume`), and,
+when `lock_on_focus_lost = true`, shortly after the terminal/app loses focus.
+There is no idle-time lock. Locking stops the bridge, so messages are queued
+by WhatsApp until you unlock. Focus events are only as reliable as the
+terminal reports them; tmux needs `focus-events on`, and some terminals such
+as macOS Terminal.app do not report them consistently.
 
 The lock is only as strong as GPG's prompt. If gpg-agent has the passphrase
 cached, or pinentry-mac has saved it in the macOS Keychain, `gpg --decrypt`

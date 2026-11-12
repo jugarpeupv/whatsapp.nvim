@@ -31,6 +31,7 @@ local defaults = {
     home = nil, -- optional GNUPGHOME
   },
   lock_on_resume = true, -- lock after a long wall-clock jump (system suspend)
+  lock_on_focus_lost = false, -- lock when the terminal/app loses focus
   images = {
     mode = "auto", -- "auto" | "tag" | "kitty", see docs/configuration.md
     max_width = 60, -- cells; pictures fill the bubble up to this
@@ -150,6 +151,7 @@ end
 
 local typing_timer = nil
 local resume_timer = nil
+local focus_timer = nil
 local help_back_list = false
 local loading = {} -- jid -> true while a messages.list request is in flight
 local apply_win_opts
@@ -172,6 +174,36 @@ local function stop_typing()
   end
   S.typing = nil
   chat.render_typing(false)
+end
+
+local function cancel_focus_lock()
+  if focus_timer then
+    focus_timer:stop()
+    focus_timer:close()
+    focus_timer = nil
+  end
+end
+
+-- A short delay keeps pinentry and transient focus changes from locking the
+-- store while a dialog is opening. Only a paired, unlocked session is locked.
+local function schedule_focus_lock()
+  cancel_focus_lock()
+  if not (S.opts.lock_on_focus_lost and encrypted() and not locked()) then
+    return
+  end
+  if S.unlocking or S.pairing or not client.running() then
+    return
+  end
+  if not (S.status and S.status.paired == true) then
+    return
+  end
+  focus_timer = vim.defer_fn(function()
+    focus_timer = nil
+    if S.locked or S.unlocking or not client.running() then
+      return
+    end
+    M.lock()
+  end, 250)
 end
 
 local function start_typing(d)
@@ -890,17 +922,85 @@ end
 -- again after the events user configs commonly hook to toggle number
 -- options (window switch, insert mode, terminal focus). Plugin autocmds are
 -- defined after the user's, so they run last and win.
-local common = { number = false, relativenumber = false, signcolumn = "no", foldcolumn = "0" }
+local common = {
+  number = false,
+  relativenumber = false,
+  signcolumn = "no",
+  foldcolumn = "0",
+  cursorline = false,
+  wrap = true,
+  linebreak = false,
+  winfixwidth = false,
+  winfixheight = false,
+}
 local WIN_OPTS = {
   list = vim.tbl_extend("force", common, { cursorline = true, wrap = false, winfixwidth = true }),
-  chat = vim.tbl_extend("force", common, { wrap = true, linebreak = true, cursorline = false }),
+  chat = vim.tbl_extend("force", common, { wrap = true, linebreak = true }),
   compose = vim.tbl_extend("force", common, { winfixheight = true }),
 }
+
+-- Window options are not buffer-local. Remember what the window had before a
+-- Whatsapp buffer used it, and put it back when the window shows something
+-- else; otherwise wrap/signcolumn/winfixwidth/winbar leak into user buffers.
+local saved_win_opts = {}
+
+local function save_win_opts(win)
+  if saved_win_opts[win] then
+    return
+  end
+  local opts = { winbar = vim.wo[win].winbar }
+  for _, spec in pairs(WIN_OPTS) do
+    for k in pairs(spec) do
+      opts[k] = vim.wo[win][k]
+    end
+  end
+  saved_win_opts[win] = opts
+end
+
+local function restore_win_opts(win)
+  local opts = saved_win_opts[win]
+  if not opts then
+    return
+  end
+  if vim.api.nvim_win_is_valid(win) then
+    for k, v in pairs(opts) do
+      vim.wo[win][k] = v
+    end
+  end
+  saved_win_opts[win] = nil
+end
+
+local function pane_for_buf(buf)
+  local ft = vim.bo[buf].filetype
+  if ft == "whatsapp-chats" then
+    return "list"
+  elseif ft == "whatsapp-compose" then
+    return "compose"
+  elseif ft == "whatsapp" then
+    return "chat"
+  end
+end
+
+-- Apply the right pane options to whatever window shows a Whatsapp buffer,
+-- including buffers opened directly with :buffer. Non-Whatsapp buffers get
+-- the window's original options back.
+local function apply_buffer_opts(win, buf)
+  local name = pane_for_buf(buf)
+  if not name then
+    restore_win_opts(win)
+    return
+  end
+  save_win_opts(win)
+  for k, v in pairs(WIN_OPTS[name]) do
+    vim.wo[win][k] = v
+  end
+end
 
 apply_win_opts = function(name)
   if not S.win_showing(name) then
     return
   end
+  save_win_opts(S.wins[name])
   for k, v in pairs(WIN_OPTS[name]) do
     vim.wo[S.wins[name]][k] = v
   end
@@ -1032,16 +1132,18 @@ end
 
 local function layout_autocmds(mode)
   local group = vim.api.nvim_create_augroup("WhatsappLayout", { clear = true })
-  vim.api.nvim_create_autocmd({ "WinEnter", "InsertEnter", "InsertLeave", "FocusGained", "FocusLost" }, {
+  vim.api.nvim_create_autocmd({ "BufEnter", "WinEnter", "InsertEnter", "InsertLeave", "FocusGained", "FocusLost" }, {
     group = group,
     callback = function(ev)
-      for name in pairs(WIN_OPTS) do
-        apply_win_opts(name)
-      end
+      apply_buffer_opts(vim.api.nvim_get_current_win(), vim.api.nvim_get_current_buf())
       if ev.event == "FocusLost" then
         set_presence(false)
-      elseif ev.event == "FocusGained" and S.current and S.layout_valid() then
-        set_presence(true)
+        schedule_focus_lock()
+      elseif ev.event == "FocusGained" then
+        cancel_focus_lock()
+        if S.current and S.layout_valid() then
+          set_presence(true)
+        end
       end
     end,
   })
@@ -1052,6 +1154,12 @@ local function layout_autocmds(mode)
         chat.render()
         list.render()
       end
+    end,
+  })
+  vim.api.nvim_create_autocmd("WinClosed", {
+    group = group,
+    callback = function(ev)
+      saved_win_opts[tonumber(ev.match)] = nil
     end,
   })
   if mode == "tab" then
@@ -1142,10 +1250,12 @@ function M.open(mode)
     if S.mode == "tab" then
       vim.api.nvim_set_current_tabpage(S.tab)
     end
-    if S.current and S.win_valid("chat") then
-      vim.api.nvim_set_current_win(S.wins.chat)
-    elseif S.win_valid("list") then
-      vim.api.nvim_set_current_win(S.wins.list)
+    -- :Whatsapp is the "show me the chat list" command. Do not leave the
+    -- previous conversation buffer in front just because it is still open.
+    if locked() then
+      M.show_chat(true)
+    else
+      M.show_list()
     end
     return
   end
@@ -1179,6 +1289,7 @@ function M.close()
       pcall(vim.cmd, "tabclose")
     elseif S.wins.chat and vim.api.nvim_win_is_valid(S.wins.chat) then
       if S.mode == "current" then
+        restore_win_opts(S.wins.chat)
         if prev and prev.buf and vim.api.nvim_buf_is_valid(prev.buf) then
           pcall(vim.api.nvim_win_set_buf, S.wins.chat, prev.buf)
         end
@@ -1205,6 +1316,7 @@ end
 -- Lock hides the conversation, stops the bridge, and drops the SQLCipher key
 -- with the process. Whatever is on disk stays encrypted.
 function M.lock()
+  cancel_focus_lock()
   local was_running = client.running()
   S.available = false
   S.locked = true
