@@ -165,6 +165,14 @@ function M.splash_buf()
   return splash_buf
 end
 
+function M.close_buffers()
+  if splash_buf and vim.api.nvim_buf_is_valid(splash_buf) then
+    pcall(vim.api.nvim_buf_delete, splash_buf, { force = true })
+  end
+  splash_buf = nil
+  states = {}
+end
+
 function M.media_count()
   return #chat_state().media_rows
 end

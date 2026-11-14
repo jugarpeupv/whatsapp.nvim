@@ -294,7 +294,9 @@ without restarting the editor.
 The session is locked by `:Whatsapp lock`, when Neovim exits, and after a
 system suspend/wake detected by a wall-clock jump (`lock_on_resume`), and,
 when `lock_on_focus_lost = true`, shortly after the terminal/app loses focus.
-There is no idle-time lock. Locking stops the bridge, so messages are queued
+The session locks even if another file is in front, and all Whatsapp buffers
+are closed. The locked splash is only shown when a Whatsapp buffer was the one
+in use. There is no idle-time lock. Locking stops the bridge, so messages are queued
 by WhatsApp until you unlock. Focus events are only as reliable as the
 terminal reports them; tmux needs `focus-events on`, and some terminals such
 as macOS Terminal.app do not report them consistently.

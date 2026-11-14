@@ -489,9 +489,26 @@ return function()
   S.status.paired = true
   vim.api.nvim_exec_autocmds("FocusLost", {})
   check(wait_for(function() return S.locked and not client.running() end, 2000), "focus loss locks the session")
+  check(next(S.chat_bufs) == nil and vim.fn.bufnr("whatsapp://chats") == -1,
+    "focus lock closes all Whatsapp buffers")
   S.opts.encryption, S.opts.lock_on_focus_lost = saved_encryption, saved_focus_lock
   wa.open()
   check(wait_for(function() return #S.chats == 2 end), "the list comes back after reopening")
+
+  S.opts.encryption, S.opts.lock_on_focus_lost = "gpg", true
+  S.status.paired = true
+  vim.cmd("enew")
+  local outside_buf = vim.api.nvim_get_current_buf()
+  vim.api.nvim_exec_autocmds("FocusLost", {})
+  vim.wait(500)
+  check(S.locked and not client.running(), "focus loss outside Whatsapp still locks the session")
+  check(vim.api.nvim_get_current_buf() == outside_buf and vim.bo.filetype ~= "whatsapp",
+    "focus loss outside Whatsapp does not show the locked buffer")
+  check(vim.fn.bufnr("whatsapp://chats") == -1, "outside focus loss also closes all Whatsapp buffers")
+  S.opts.encryption, S.opts.lock_on_focus_lost = saved_encryption, saved_focus_lock
+  wa.open()
+  check(wait_for(function() return #S.chats == 2 end), "the list comes back after an outside lock")
+  vim.api.nvim_exec_autocmds("FocusGained", {})
 
   -- Manual lock stops the bridge and hides the conversation. Reopening starts
   -- a fresh bridge; with encryption off the ready event clears the lock.

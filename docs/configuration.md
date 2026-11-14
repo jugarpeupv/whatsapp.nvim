@@ -40,7 +40,7 @@ A dedicated key in its own `GNUPGHOME` is recommended so its agent can have `def
 
 The store must be fresh: enabling encryption on an existing plaintext store is refused. Run `:Whatsapp logout`, set the option, then `:Whatsapp pair` again.
 
-`:Whatsapp lock` stops the bridge and drops the key; `:Whatsapp unlock` asks GPG for it again. The bridge also locks when Neovim exits, with `lock_on_resume` after a system suspend/wake detected by a wall-clock jump, and with `lock_on_focus_lost` about 250 ms after the terminal/app loses focus. Locking calls the same path as `:Whatsapp lock`, so the conversation buffers are cleared and a locked splash is shown. There is no idle-time lock. While locked there is no WhatsApp connection, so incoming messages wait on the server. Focus events depend on the terminal: tmux needs `focus-events on`, and Terminal.app does not report them reliably.
+`:Whatsapp lock` stops the bridge and drops the key; `:Whatsapp unlock` asks GPG for it again. The bridge also locks when Neovim exits, with `lock_on_resume` after a system suspend/wake detected by a wall-clock jump, and with `lock_on_focus_lost` about 250 ms after the terminal/app loses focus. The session locks even when another file has focus, and all Whatsapp buffers are closed. The locked splash is only displayed if the buffer in use was a Whatsapp buffer. Locking calls the same path as `:Whatsapp lock`, so the conversation buffers are cleared and a locked splash is shown. There is no idle-time lock. While locked there is no WhatsApp connection, so incoming messages wait on the server. Focus events depend on the terminal: tmux needs `focus-events on`, and Terminal.app does not report them reliably.
 
 ## Opening
 

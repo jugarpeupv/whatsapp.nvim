@@ -185,14 +185,33 @@ function M.render_winbar()
   return winbar_text[win] or ""
 end
 
-local function clear_chat_buffers()
-  for _, buf in pairs(S.chat_bufs) do
-    if vim.api.nvim_buf_is_valid(buf) then
+local function close_whatsapp_buffers()
+  local seen = {}
+  local function delete(buf)
+    if buf and not seen[buf] and vim.api.nvim_buf_is_valid(buf) then
+      seen[buf] = true
       pcall(vim.api.nvim_buf_delete, buf, { force = true })
     end
   end
+  if S.win_valid("compose") then
+    pcall(vim.api.nvim_win_close, S.wins.compose, true)
+    S.wins.compose = nil
+  end
+  for _, buf in pairs(S.chat_bufs) do
+    delete(buf)
+  end
+  for _, draft in pairs(S.drafts) do
+    delete(draft.buf)
+  end
+  delete(S.bufs.chat)
+  delete(S.bufs.list)
+  delete(S.bufs.compose)
+  pcall(function()
+    require("whatsapp.ui.chat").close_buffers()
+  end)
   S.chat_bufs = {}
-  S.bufs.chat = nil
+  S.bufs = { list = nil, chat = nil, compose = nil }
+  S.drafts = {}
 end
 
 local function stop_typing()
@@ -213,8 +232,15 @@ local function cancel_focus_lock()
   end
 end
 
+local function current_is_whatsapp()
+  local ft = vim.bo[vim.api.nvim_get_current_buf()].filetype
+  return ft == "whatsapp" or ft == "whatsapp-chats" or ft == "whatsapp-compose"
+end
+
 -- A short delay keeps pinentry and transient focus changes from locking the
--- store while a dialog is opening. Only a paired, unlocked session is locked.
+-- store while a dialog is opening. Only lock if Whatsapp was actually the
+-- buffer in use; losing focus from an unrelated file must not spawn the lock
+-- screen.
 local function schedule_focus_lock()
   cancel_focus_lock()
   if not (S.opts.lock_on_focus_lost and encrypted() and not locked()) then
@@ -226,12 +252,15 @@ local function schedule_focus_lock()
   if not (S.status and S.status.paired == true) then
     return
   end
+  -- Lock even if the user is looking at another file, but only bring up the
+  -- locked splash when Whatsapp was the buffer in use.
+  local show_locked = current_is_whatsapp()
   focus_timer = vim.defer_fn(function()
     focus_timer = nil
     if S.locked or S.unlocking or not client.running() then
       return
     end
-    M.lock()
+    M.lock({ show = show_locked })
   end, 250)
 end
 
@@ -1411,7 +1440,8 @@ end
 
 -- Lock hides the conversation, stops the bridge, and drops the SQLCipher key
 -- with the process. Whatever is on disk stays encrypted.
-function M.lock()
+function M.lock(opts)
+  local show = not opts or opts.show ~= false
   cancel_focus_lock()
   local was_running = client.running()
   S.available = false
@@ -1430,7 +1460,7 @@ function M.lock()
     S.split_win = nil
     S.wins.chat = S.pane_chat_win or S.wins.list
   end
-  clear_chat_buffers()
+  close_whatsapp_buffers()
   S.qr = nil
   S.pairing = false
   S.help = false
@@ -1440,14 +1470,9 @@ function M.lock()
   S.sync = nil
   S.out_of_sync = {}
   stop_typing()
-  if S.win_valid("compose") then
-    vim.api.nvim_win_close(S.wins.compose, true)
-    S.wins.compose = nil
-  end
   client.stop()
-  if S.layout_valid() then
+  if show and S.layout_valid() then
     M.show_chat(true)
-    list.render()
     chat.render()
   end
   if was_running then
@@ -1521,7 +1546,7 @@ function M.logout()
   end
   client.request("logout", nil, function(err)
     M.close()
-    clear_chat_buffers()
+    close_whatsapp_buffers()
     client.stop()
     S.status.paired = false
     S.status.connected = false
